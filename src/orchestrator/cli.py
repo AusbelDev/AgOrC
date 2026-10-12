@@ -3,13 +3,19 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import os
 import shlex
 import shutil
 import sys
 from pathlib import Path
 
-from .config import ConfigError, default_config, default_state_dir, load_config, save_config
+from .config import (
+    EXECUTABLES,
+    ConfigError,
+    default_config,
+    default_state_dir,
+    load_config,
+    save_config,
+)
 from .engine import Engine, create_demo, report
 from .processes import run_process
 from .store import Store
@@ -56,7 +62,7 @@ def parser() -> argparse.ArgumentParser:
 async def doctor(config, *, live: bool = False) -> int:
     missing = False
     for name, provider in config.providers.items():
-        command = provider.executable or ("codex" if provider.backend == "codex-cli" else "gemini")
+        command = provider.executable or EXECUTABLES[provider.backend]
         location = shutil.which(command)
         if not location:
             print(f"{name}: {command} is not installed")
@@ -80,14 +86,10 @@ async def doctor(config, *, live: bool = False) -> int:
                 missing = True
                 print("  A ChatGPT login is required for this adapter.")
         else:
-            home = Path(os.environ.get("GEMINI_CLI_HOME", Path.home() / ".gemini"))
-            cached = (home / "oauth_creds.json").exists()
             print(
-                "  Cached Google login found (not validated online)."
-                if cached
-                else "  No cached Google login found; run gemini and choose Sign in with Google."
+                "  Antigravity login is managed by agy; sign in with `agy` if needed. "
+                "Use doctor --live to verify access."
             )
-            missing |= not cached
     print(
         "Model IDs are user configured; availability is validated "
         "by the provider when a stage runs."

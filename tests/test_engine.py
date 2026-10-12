@@ -7,7 +7,7 @@ import pytest
 from orchestrator import git
 from orchestrator.adapters import AgentResult, BackendError, BackendRegistry
 from orchestrator.config import default_config
-from orchestrator.engine import Engine, parse_response
+from orchestrator.engine import Engine, parse_response, report
 
 PLAN = {"summary": "Fix value", "steps": ["Update value"], "acceptance_criteria": ["Value is 2"]}
 ACCEPT = {"accepted": True, "summary": "Correct", "findings": []}
@@ -49,7 +49,7 @@ class ScriptedBackend:
 def engine_for(store, backend):
     registry = BackendRegistry()
     registry.register("codex-cli", backend)
-    registry.register("gemini-cli", backend)
+    registry.register("agy-cli", backend)
     return Engine(store, registry)
 
 
@@ -123,7 +123,7 @@ async def test_pause_resume_keeps_config_and_rechecks_external_changes(store, pr
     config.roles["worker"].model = "some-other-model"
     finished = await engine.execute(run.id)
     assert finished.status == "completed"
-    assert finished.config["roles"]["worker"]["model"] == "gemini-3.8-flash"
+    assert finished.config["roles"]["worker"]["model"] == "gemini-3.8-flash-medium"
     assert any("Workspace changed" in event["message"] for event in store.events(run.id))
     assert backend.calls.count("worker") == 2
 
@@ -203,6 +203,37 @@ async def test_branch_or_head_change_blocks_resume(store, project):
     finished = await engine.execute(run.id)
     assert finished.status == "failed"
     assert "branch changed" in finished.error
+
+
+def make_legacy_snapshot(run):
+    run.config["providers"]["antigravity"].update(
+        backend="gemini-cli", executable="gemini", models=["gemini-3.8-flash"]
+    )
+    run.config["roles"]["worker"]["model"] = "gemini-3.8-flash"
+
+
+async def test_saved_legacy_run_migrates_and_records_the_new_backend(store, project):
+    engine = engine_for(store, ScriptedBackend())
+    run = await engine.create("Fix value", project, default_config())
+    make_legacy_snapshot(run)
+    store.save(run)
+    with pytest.warns(UserWarning, match="Migrated Gemini CLI"):
+        finished = await engine.execute(run.id)
+    assert finished.status == "completed"
+    saved = store.get(run.id)
+    assert saved.config["providers"]["antigravity"]["backend"] == "agy-cli"
+    assert saved.config["roles"]["worker"]["model"] == "gemini-3.8-flash-medium"
+    assert any(event["kind"] == "migration" for event in store.events(run.id))
+
+
+async def test_historical_report_retains_legacy_model_id(store, project):
+    engine = engine_for(store, ScriptedBackend())
+    run = await engine.create("Fix value", project, default_config())
+    make_legacy_snapshot(run)
+    text = report(run)
+    assert "antigravity / gemini-3.8-flash / medium" in text
+    assert "gemini-3.8-flash-medium" not in text
+    assert run.config["providers"]["antigravity"]["backend"] == "gemini-cli"
 
 
 @pytest.mark.parametrize(

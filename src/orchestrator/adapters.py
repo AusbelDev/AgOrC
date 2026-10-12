@@ -4,14 +4,13 @@ import asyncio
 import json
 import os
 import shutil
-import sys
 import tempfile
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
-from .config import Provider, Role
+from .config import EXECUTABLES, Provider, Role
 from .processes import run_process
 
 EventSink = Callable[[str, str, dict[str, Any]], Awaitable[None]]
@@ -59,14 +58,12 @@ def login_environment() -> dict[str, str]:
         "CLOUD_SHELL",
     ):
         environment.pop(name, None)
-    environment.update(NO_COLOR="1", CI="1", GEMINI_CLI_NO_RELAUNCH="true")
+    environment.update(NO_COLOR="1", CI="1")
     return environment
 
 
 def executable(provider: Provider) -> str:
-    command = (
-        provider.executable or {"codex-cli": "codex", "gemini-cli": "gemini"}[provider.backend]
-    )
+    command = provider.executable or EXECUTABLES[provider.backend]
     resolved = shutil.which(command)
     if not resolved:
         raise BackendError(f"Cannot find {command!r}. Install it and log in from your terminal.")
@@ -150,90 +147,38 @@ class CodexBackend:
         return result
 
 
-READ_TOOLS = ["read_file", "read_many_files", "list_directory", "glob", "grep_search"]
-
-
-def gemini_policy(worker: bool) -> str:
-    # Only repository read tools and, for workers, edit tools are enabled.
-    # No shell, MCP actions, network tools, or nested agents in this adapter.
-    allowed = READ_TOOLS + (["write_file", "replace"] if worker else [])
-    return (
-        '[[rule]]\ntoolName = "*"\ndecision = "deny"\npriority = 998\n\n'
-        f'[[rule]]\ntoolName = {json.dumps(allowed)}\ndecision = "allow"\npriority = 999\n'
-    )
-
-
-def gemini_settings(request: AgentRequest) -> dict[str, Any]:
-    settings: dict[str, Any] = {
-        "security": {"auth": {"selectedType": "oauth-personal", "enforcedType": "oauth-personal"}},
-        "general": {"enableAutoUpdate": False},
-    }
+def antigravity_command(request: AgentRequest) -> list[str]:
+    argv = [
+        executable(request.provider),
+        "--input-format",
+        "stream-json",
+        "--output-format",
+        "stream-json",
+        "--model",
+        request.role.model,
+        "--mode",
+        "accept-edits" if request.role_name == "worker" else "plan",
+        "--print-timeout",
+        f"{request.timeout}s",
+    ]
     if request.role.reasoning != "default":
-        settings["modelConfigs"] = {
-            "overrides": [
-                {
-                    "match": {"model": request.role.model},
-                    "modelConfig": {
-                        "generateContentConfig": {
-                            "thinkingConfig": {"thinkingLevel": request.role.reasoning.upper()},
-                        }
-                    },
-                }
-            ]
-        }
-    return settings
+        argv += ["--effort", request.role.reasoning]
+    if request.schema:
+        argv += ["--json-schema", json.dumps(request.schema)]
+    if request.provider.sandbox:
+        argv += ["--sandbox"]
+    return argv
 
 
-def gemini_system_settings_path() -> Path:
-    configured = os.environ.get("GEMINI_CLI_SYSTEM_SETTINGS_PATH")
-    if configured:
-        return Path(configured)
-    if sys.platform == "darwin":
-        return Path("/Library/Application Support/GeminiCli/settings.json")
-    return Path("/etc/gemini-cli/settings.json")
-
-
-def merge_settings(base: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:
-    merged = dict(base)
-    for key, value in overrides.items():
-        if isinstance(value, dict) and isinstance(merged.get(key), dict):
-            merged[key] = merge_settings(merged[key], value)
-        elif isinstance(value, list) and isinstance(merged.get(key), list):
-            merged[key] = [*merged[key], *value]
-        else:
-            merged[key] = value
-    return merged
-
-
-def effective_gemini_settings(request: AgentRequest) -> dict[str, Any]:
-    path = gemini_system_settings_path()
-    base: dict[str, Any] = {}
-    if path.exists():
-        try:
-            base = json.loads(path.read_text(encoding="utf-8"))
-            if not isinstance(base, dict):
-                raise ValueError("Expected a JSON object")
-        except (OSError, ValueError) as exc:
-            raise BackendError(
-                f"Cannot preserve Gemini system settings from {path}: {exc}"
-            ) from exc
-    enforced = base.get("security", {}).get("auth", {}).get("enforcedType")
-    if enforced and enforced != "oauth-personal":
-        raise BackendError(
-            f"Gemini system settings enforce {enforced!r}; this provider requires Google login."
-        )
-    return merge_settings(base, gemini_settings(request))
-
-
-class GeminiBackend:
+class AntigravityBackend:
     async def run(self, request: AgentRequest, emit: EventSink) -> AgentResult:
         result = AgentResult("")
         completed = False
-        failed = False
+        status = ""
         error_detail = ""
 
         async def line(stream: str, text: str) -> None:
-            nonlocal completed, failed, error_detail
+            nonlocal completed, status, error_detail
             if stream == "stderr":
                 await emit("log", text, {})
                 return
@@ -242,74 +187,87 @@ class GeminiBackend:
             except json.JSONDecodeError:
                 await emit("log", text, {})
                 return
-            kind = event.get("type", "event")
+            if not isinstance(event, dict):
+                raise BackendError("Antigravity emitted a malformed event object.")
+            kind = event.get("event", "event")
             if kind == "init":
-                result.session_id = event.get("session_id", "")
-                actual_model = event.get("model")
+                result.session_id = event.get("conversation_id", "")
+                details = event.get("init", {})
+                if not isinstance(details, dict):
+                    raise BackendError("Antigravity emitted malformed initialization data.")
+                actual_model = details.get("model")
                 if actual_model and actual_model != request.role.model:
                     raise BackendError(
-                        f"Gemini selected {actual_model!r} instead of {request.role.model!r}. "
-                        "Model fallback is not enabled."
+                        f"Antigravity selected {actual_model!r} instead of "
+                        f"{request.role.model!r}. Model fallback is not enabled."
                     )
-            elif kind == "message" and event.get("role") == "assistant":
-                content = event.get("content", "")
-                result.text = result.text + content if event.get("delta", True) else content
+                await emit("agent", "Antigravity session started", event)
+            elif kind == "step_update":
+                step = event.get("step_update", {})
+                if not isinstance(step, dict):
+                    raise BackendError("Antigravity emitted a malformed step update.")
+                # Text deltas are progress only. The terminal result is the authoritative answer.
+                message = step.get("text_delta") or step.get("tool_name") or step.get("step_type")
+                await emit("agent", str(message or "step_update"), event)
             elif kind == "result":
+                if completed:
+                    raise BackendError("Antigravity emitted multiple results for one task stage.")
+                details = event.get("result", {})
+                if not isinstance(details, dict):
+                    raise BackendError("Antigravity emitted a malformed terminal result.")
                 completed = True
-                failed = event.get("status") != "success"
-                result.usage = event.get("stats", {})
-                error_detail = str(event.get("error", ""))
-            await emit("agent", str(event.get("content") or event.get("tool_name") or kind), event)
+                status = details.get("status", "")
+                result.session_id = details.get("conversation_id", result.session_id)
+                result.usage = details.get("usage", {})
+                response = details.get("response", "")
+                if request.schema and "structured_output" in details:
+                    response = json.dumps(details["structured_output"])
+                if not isinstance(response, str):
+                    raise BackendError("Antigravity's response must be text.")
+                result.text = response
+                error_detail = str(details.get("error", ""))
+                await emit("agent", f"Antigravity finished: {status or 'unknown status'}", event)
+            else:
+                await emit("agent", str(kind), event)
 
-        with tempfile.TemporaryDirectory(prefix="orchestrator-gemini-") as directory:
-            policy_path = Path(directory) / "policy.toml"
-            policy_path.write_text(gemini_policy(request.role_name == "worker"), encoding="utf-8")
-            settings_path = Path(directory) / "settings.json"
-            settings_path.write_text(
-                json.dumps(effective_gemini_settings(request)), encoding="utf-8"
-            )
-            environment = login_environment()
-            environment["GEMINI_CLI_SYSTEM_SETTINGS_PATH"] = str(settings_path)
-            environment.setdefault(
-                "GEMINI_CLI_SYSTEM_DEFAULTS_PATH",
-                str(gemini_system_settings_path().with_name("system-defaults.json")),
-            )
-            environment["NO_BROWSER"] = "true"
-            argv = [
-                executable(request.provider),
-                "--model",
-                request.role.model,
-                "--output-format",
-                "stream-json",
-                "--skip-trust",
-                "--approval-mode",
-                "auto_edit",
-                "--admin-policy",
-                str(policy_path),
-                "--prompt",
-                "Follow the task supplied on stdin.",
-            ]
-            if request.provider.sandbox:
-                argv += ["--sandbox"]
-            prompt = request.prompt
-            if request.schema:
-                prompt += "\nReturn ONLY JSON matching this schema:\n" + json.dumps(request.schema)
-            process = await run_process(
-                argv,
-                request.workspace,
-                input_text=prompt,
-                env=environment,
-                on_line=line,
-                timeout=request.timeout,
-            )
-        if process.code != 0 or not completed or failed or not result.text.strip():
-            detail = error_detail or process.stderr or "No successful response received."
-            if process.code == 41 or "Manual authorization is required" in detail:
-                raise BackendError(
-                    "Gemini requires an interactive Google login. Run `gemini` in your terminal, "
-                    "choose Sign in with Google, then resume this run or rerun doctor --live."
+        prompt = json.dumps({"event": "user", "message": {"content": request.prompt}}) + "\n"
+        process = await run_process(
+            antigravity_command(request),
+            request.workspace,
+            input_text=prompt,
+            env=login_environment(),
+            on_line=line,
+            timeout=request.timeout,
+        )
+        if process.code != 0 or not completed or status != "SUCCESS" or not result.text.strip():
+            detail = error_detail or process.stderr or "No successful terminal result received."
+            lowered = detail.lower()
+            if any(
+                marker in lowered
+                for marker in (
+                    "authentication required",
+                    "not authenticated",
+                    "not logged in",
+                    "login required",
+                    "sign in",
+                    "sign-in",
+                    "no credentials",
+                    "credentials expired",
                 )
-            raise BackendError(f"Gemini failed (exit {process.code}): {detail[-4000:]}")
+            ):
+                raise BackendError(
+                    "Antigravity requires a signed-in CLI session. Run `agy` in your terminal "
+                    "to sign in, then resume this run or rerun doctor --live."
+                )
+            if "gemini_api_key" in lowered:
+                raise BackendError(
+                    "Antigravity is configured for API-key authentication. Remove modelProvider "
+                    "from ~/.gemini/antigravity-cli/settings.json and sign in using `agy` "
+                    "to use this login adapter."
+                )
+            raise BackendError(
+                f"Antigravity failed (exit {process.code}, status {status}): {detail[-4000:]}"
+            )
         return result
 
 
@@ -356,7 +314,7 @@ class BackendRegistry:
     def __init__(self, *, demo: bool = False) -> None:
         self.backends: dict[str, AgentBackend] = {
             "codex-cli": CodexBackend(),
-            "gemini-cli": GeminiBackend(),
+            "agy-cli": AntigravityBackend(),
         }
         self.demo = demo
 

@@ -12,7 +12,7 @@ from typing import Any
 
 from . import git
 from .adapters import AgentRequest, BackendError, BackendRegistry
-from .config import Config
+from .config import Config, Role
 from .processes import run_process
 from .store import Run, Store
 
@@ -175,10 +175,11 @@ class Engine:
                 "The orchestrator runs configured checks afterward. "
                 "Summarize what you changed and any remaining concerns."
             )
-            if provider.backend == "gemini-cli":
+            if provider.backend == "agy-cli":
                 prompt += (
-                    "\nOnly repository read and edit tools are enabled. Shell commands, MCP, and "
-                    "delegation are unavailable. Use file tools to implement the task."
+                    "\nUse repository file tools to implement the task. The orchestrator runs "
+                    "configured checks afterward. Do not change CLI permission settings. "
+                    "This is headless execution; permission prompts cannot be answered."
                 )
             schema = None
         else:
@@ -278,6 +279,11 @@ class Engine:
             self.pause_requested = False
             started = time.monotonic()
             try:
+                if run.config != config.to_dict():
+                    run.config = config.to_dict()
+                    await self.emit(
+                        run, "migration", "Migrated the saved Gemini CLI backend to Antigravity."
+                    )
                 await git.validate_worktree(Path(run.worktree), run.branch, run.base)
                 current = await git.fingerprint(Path(run.worktree), run.base)
                 if run.fingerprint != current and run.stage in ("checks", "reviewer"):
@@ -369,7 +375,8 @@ class Engine:
 
 
 def report(run: Run) -> str:
-    config = Config.from_dict(run.config)
+    # Historical reports retain the models and providers actually used by that run.
+    roles = {name: Role(**role) for name, role in run.config["roles"].items()}
     lines = [
         f"# Run {run.id}",
         "",
@@ -385,7 +392,7 @@ def report(run: Run) -> str:
         "## Models",
         "",
     ]
-    for name, role in config.roles.items():
+    for name, role in roles.items():
         lines.append(f"- {name}: {role.provider} / {role.model} / {role.reasoning}")
     lines += ["", "## Plan", "", run.plan.get("summary", "No plan yet.")]
     lines += [f"- {step}" for step in run.plan.get("steps", [])]

@@ -7,11 +7,11 @@ auth = "login"
 executable = "codex"
 models = ["gpt-6.1-sol"]
 
-[providers.gemini]
-backend = "gemini-cli"
+[providers.antigravity]
+backend = "agy-cli"
 auth = "login"
-executable = "gemini"
-models = ["gemini-3.8-flash"]
+executable = "agy"
+models = ["gemini-3.8-flash-medium"]
 sandbox = false
 
 [roles.planner]
@@ -21,8 +21,8 @@ reasoning = "high"
 instructions = ""
 
 [roles.worker]
-provider = "gemini"
-model = "gemini-3.8-flash"
+provider = "antigravity"
+model = "gemini-3.8-flash-medium"
 reasoning = "medium"
 instructions = ""
 

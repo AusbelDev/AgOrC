@@ -4,7 +4,7 @@ A local terminal app for coding tasks: a planner investigates your project, a wo
 plan, and a reviewer checks the resulting changes. Choose the provider, model, and reasoning level
 independently for each role.
 
-The first version uses **existing Codex and Gemini CLI logins**. Defaults are GPT-6.1 Sol with high
+The first version uses **existing Codex and Antigravity CLI logins**. Defaults are GPT-6.1 Sol with high
 reasoning for planning/review, and Gemini 3.8 Flash with medium thinking for implementation. Model IDs
 are editable; the backend and your account must support the selected model. The app does not silently
 substitute another configured model.
@@ -12,7 +12,7 @@ substitute another configured model.
 ## Start
 
 Requires Python 3.11+, [uv](https://docs.astral.sh/uv/), and a Linux or macOS terminal. Tested locally
-against Codex CLI 0.162.1 and Gemini CLI 0.46.0's command surfaces.
+against Codex CLI 0.162.1 and Antigravity CLI (`agy`) 1.3.3's command surfaces.
 
 ```sh
 uv sync
@@ -25,16 +25,20 @@ Log in outside the app if needed:
 
 ```sh
 codex login
-gemini
+agy
 ```
 
-Choose ChatGPT login in Codex and Sign in with Google in Gemini. The orchestrator leaves cached
-credentials with the CLIs, does not copy them into run records, and removes API credential variables
-from agent subprocess environments. Codex is explicitly configured for ChatGPT auth; Gemini gets
-temporary settings enforcing Google OAuth. Expired logins fail the stage and can be retried after
-logging in again. `doctor` checks local login indicators without making model requests.
-Use `uv run orchestrator doctor --live` to verify each distinct role configuration with a minimal
-model request. This uses your account's model quota.
+Choose ChatGPT login in Codex and complete sign-in in `agy`. Antigravity's command is `agy`,
+even though this app names its backend `agy-cli`. Its sign-in is separate from the retired Gemini
+CLI's OAuth cache. Credentials remain in each CLI's normal stores; this app does not copy them into
+run records and removes API credential variables from agent subprocess environments. Antigravity
+uses its cached CLI account/keyring, without rewriting its settings or permissions. If its settings
+select `modelProvider = "gemini"` for API authentication, remove that setting to use account login.
+
+`doctor` checks CLI installation and Codex's login status. Antigravity has no equivalent login-status
+subcommand, so a local check does not claim that its account is authenticated. Use
+`uv run orchestrator doctor --live` to verify each distinct role configuration with a minimal model
+request. This uses account quota. Expired logins fail visibly; run `agy` to sign in and then resume.
 
 Try the **Offline demo** button to fix a small real bug in a generated sample project, run its tests,
 and inspect the diff without contacting a provider. From the command line:
@@ -59,10 +63,10 @@ executable = "codex"
 models = ["gpt-6.1-sol"]
 
 [providers.my_google]
-backend = "gemini-cli"
+backend = "agy-cli"
 auth = "login"
-executable = "gemini"
-models = ["gemini-3.8-flash"]
+executable = "agy"
+models = ["gemini-3.8-flash-medium"]
 sandbox = false
 
 [roles.planner]
@@ -72,7 +76,7 @@ reasoning = "high"
 
 [roles.worker]
 provider = "my_google"
-model = "gemini-3.8-flash"
+model = "gemini-3.8-flash-medium"
 reasoning = "medium"
 
 [roles.reviewer]
@@ -93,13 +97,21 @@ Use separate configuration and state files for work and personal projects:
 uv run orchestrator --config work.toml --state-dir ~/.local/state/orchestrator-work tui
 ```
 
-Authentication still comes from the CLIs' normal credential stores. For separate accounts, launch
-with the respective CLI-supported home environment variables pointing at **already authenticated**
-stores; config profiles alone do not switch identities.
+Authentication comes from the CLIs' normal credential stores. Configuration profiles do not switch
+identities, and this app does not automate account switching.
 
-Codex reasoning is passed as `model_reasoning_effort`. Gemini thinking is set through temporary
-`modelConfigs.overrides`. `default` preserves the backend's default effort. Available effort values
-depend on the model; unsupported combinations fail visibly instead of falling back.
+Codex reasoning is passed as `model_reasoning_effort`. Antigravity receives its native `--model`
+slug and `--effort` flag. `default` omits the effort override. Model IDs are backend-specific:
+`gemini-3.8-flash-medium` is the Antigravity slug for Gemini 3.8 Flash at medium reasoning.
+Run `agy models` to list your account's available slugs, including any Claude models it exposes.
+Unsupported model/effort combinations fail instead of falling back.
+
+Old TOML profiles using `gemini-cli` are migrated in memory with a notice: provider names,
+instructions, checks, and custom model IDs are retained; the normal `gemini` executable becomes
+`agy`. The old default `gemini-3.8-flash` ID becomes the equivalent low/medium/high Antigravity slug.
+Save settings in the TUI to persist the migration. Custom wrapper executables and unsupported
+legacy effort levels require an explicit configuration update. Saved unfinished runs migrate when
+resumed and record the change; historical reports retain their original model IDs.
 
 ## Workflow
 
@@ -126,14 +138,14 @@ or your editor; clean up a worktree yourself when you no longer need it.
 **Execution policy:** Codex uses its read-only sandbox for planner/reviewer and workspace-write
 sandbox for worker, with interactive escalation disabled. This version runs it without the user's
 global Codex configuration to enforce the selected model/auth/sandbox; repository instructions still
-apply. Gemini gets a deny-by-default policy allowing repository reads and worker file edits; shell,
-MCP, network tools, and nested agents are excluded. The orchestrator runs verification itself.
-Gemini's optional `sandbox = true` uses its configured sandbox runtime, which must already be set up.
-With `sandbox = false`, Gemini file access relies on its CLI workspace checks and tool policy, not OS
-isolation. The generated task folder is trusted for this invocation via `--skip-trust`, without
-changing saved folder trust settings. Existing system settings (plain JSON) and central admin policy
-paths are preserved; incompatible enforced authentication fails instead of being overridden.
-Central Gemini admin policies may further restrict these tools.
+apply. Antigravity uses its native `--mode plan` for planner/reviewer and `--mode accept-edits`
+for worker, and preserves your existing permission rules. Plan mode requests analysis before edits;
+it is not an OS read-only sandbox. The engine detects tracked/untracked source changes made by the
+planner/reviewer and fails the stage for inspection. Existing Antigravity command, MCP, and web
+grants still apply; headless requests requiring interactive approval are soft-denied by the CLI.
+The adapter does not use `--dangerously-skip-permissions` and does not install global permission rules.
+The orchestrator runs configured checks itself. `sandbox = true` adds Antigravity's native terminal
+sandbox flag; it restricts terminal execution and does not guarantee read-only file tools.
 
 ## Pause, stop, resume, and history
 
@@ -167,7 +179,7 @@ context size; the reviewer can inspect files directly in the worktree.
 ## Architecture and next adapters
 
 - `config.py`: named providers, roles, validation, TOML profiles.
-- `adapters.py`: backend protocol and registry, Codex/Gemini login implementations, offline fixture.
+- `adapters.py`: backend protocol and registry, Codex/Antigravity login implementations, offline fixture.
 - `processes.py`: async streaming, output limits, timeouts, process-group cancellation.
 - `git.py`: worktrees, diffs including untracked files, workspace fingerprints.
 - `engine.py`: stages, structured contracts, checks, revisions, interruption/recovery.
@@ -182,9 +194,14 @@ workers are **not implemented** in this version.
 
 Integration references:
 [Codex non-interactive mode](https://learn.chatgpt.com/docs/non-interactive-mode),
-[Gemini headless mode](https://geminicli.com/docs/cli/headless/),
-[Gemini policy engine](https://geminicli.com/docs/reference/policy-engine/),
-[Gemini model configuration](https://geminicli.com/docs/cli/generation-settings/).
+[Antigravity headless mode](https://www.antigravity.google/docs/cli/headless/),
+[Antigravity execution modes](https://www.antigravity.google/docs/cli/modes/),
+[Antigravity permissions](https://www.antigravity.google/docs/permissions/).
+
+Google documents headless mode for direct scripting and CI, and says wrapping it in third-party
+applications is unsupported under consumer plans. See the
+[Antigravity FAQ](https://www.antigravity.google/docs/faq/#can-i-use-antigravity-cli-headless-mode-in-third-party-coding-agents-or-automate-account-switching).
+This adapter invokes the native CLI; it does not extract login tokens or implement account rotation.
 
 ## Development
 

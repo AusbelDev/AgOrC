@@ -16,9 +16,9 @@ async def test_tui_model_settings_and_offline_workflow(store, tmp_path):
         await pilot.click("#save")
         await pilot.pause()
         assert load_config(path).roles["worker"].model == "custom-gemini-model"
-        app.query_one("#planner-provider", Select).value = "gemini"
+        app.query_one("#planner-provider", Select).value = "antigravity"
         await pilot.pause()
-        assert app.query_one("#planner-model", Input).value == "gemini-3.8-flash"
+        assert app.query_one("#planner-model", Input).value == "gemini-3.8-flash-medium"
         assert app.query_one("#planner-reasoning", Select).value == "high"
         app.query_one("#planner-provider", Select).value = "codex"
         await pilot.pause()

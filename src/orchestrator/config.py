@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 import tomllib
+import warnings
+from copy import deepcopy
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -9,10 +11,11 @@ from typing import Any
 import tomli_w
 
 ROLES = ("planner", "worker", "reviewer")
-BACKENDS = ("codex-cli", "gemini-cli")
+BACKENDS = ("codex-cli", "agy-cli")
+EXECUTABLES = {"codex-cli": "codex", "agy-cli": "agy"}
 EFFORTS = {
     "codex-cli": ("default", "none", "low", "medium", "high", "xhigh", "max"),
-    "gemini-cli": ("default", "minimal", "low", "medium", "high"),
+    "agy-cli": ("default", "low", "medium", "high", "xhigh", "max"),
 }
 
 
@@ -63,7 +66,8 @@ class Config:
             if provider.backend not in BACKENDS:
                 raise ConfigError(
                     f"Provider {name}: backend {provider.backend!r} is not implemented. "
-                    "Available: codex-cli, gemini-cli. API and Claude adapters are planned."
+                    "Available: codex-cli, agy-cli. "
+                    "Direct API and Claude Code adapters are planned."
                 )
             if provider.auth != "login":
                 raise ConfigError(f"Provider {name}: only existing CLI logins are supported yet.")
@@ -111,6 +115,14 @@ class Config:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Config:
         try:
+            data, migrated = migrate_gemini_config(data)
+            if migrated:
+                warnings.warn(
+                    "Migrated Gemini CLI providers to Antigravity (agy): "
+                    + ", ".join(migrated)
+                    + ". Save settings to persist the updated configuration.",
+                    stacklevel=2,
+                )
             unexpected = set(data) - {"providers", "roles", "workflow"}
             if unexpected:
                 raise ConfigError(f"Unknown configuration sections: {', '.join(unexpected)}")
@@ -128,14 +140,49 @@ def default_config() -> Config:
     return Config(
         providers={
             "codex": Provider("codex-cli", executable="codex", models=["gpt-6.1-sol"]),
-            "gemini": Provider("gemini-cli", executable="gemini", models=["gemini-3.8-flash"]),
+            "antigravity": Provider(
+                "agy-cli", executable="agy", models=["gemini-3.8-flash-medium"]
+            ),
         },
         roles={
             "planner": Role("codex", "gpt-6.1-sol", "high"),
-            "worker": Role("gemini", "gemini-3.8-flash", "medium"),
+            "worker": Role("antigravity", "gemini-3.8-flash-medium", "medium"),
             "reviewer": Role("codex", "gpt-6.1-sol", "high"),
         },
     )
+
+
+def migrate_gemini_config(data: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    """Keep named providers, instructions, and custom IDs while replacing the retired backend."""
+    copied = deepcopy(data)
+    migrated = []
+    for name, provider in copied.get("providers", {}).items():
+        if provider.get("backend") != "gemini-cli":
+            continue
+        provider["backend"] = "agy-cli"
+        command = provider.get("executable", "")
+        if command in ("", "gemini") or Path(command).name == "gemini":
+            provider["executable"] = "agy"
+        else:
+            raise ConfigError(
+                f"Provider {name}: update the custom Gemini executable {command!r} to your "
+                "Antigravity executable before migrating."
+            )
+        provider["models"] = [
+            "gemini-3.8-flash-medium" if model == "gemini-3.8-flash" else model
+            for model in provider.get("models", [])
+        ]
+        for role in copied.get("roles", {}).values():
+            if role.get("provider") == name and role.get("model") == "gemini-3.8-flash":
+                effort = role.get("reasoning", "default")
+                if effort not in ("default", "low", "medium", "high"):
+                    raise ConfigError(
+                        f"Provider {name}: choose an Antigravity model slug and supported "
+                        f"reasoning level instead of legacy effort {effort!r}."
+                    )
+                role["model"] = f"gemini-3.8-flash-{'medium' if effort == 'default' else effort}"
+        migrated.append(name)
+    return copied, migrated
 
 
 def load_config(path: Path) -> Config:
