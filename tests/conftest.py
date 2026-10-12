@@ -1,0 +1,42 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from orchestrator import git
+from orchestrator.config import default_config
+from orchestrator.engine import Engine, create_demo
+from orchestrator.store import Store
+
+
+@pytest.fixture
+def store(tmp_path: Path):
+    storage = Store(tmp_path / "state")
+    yield storage
+    storage.close()
+
+
+@pytest.fixture
+async def project(tmp_path: Path) -> Path:
+    directory = tmp_path / "project"
+    directory.mkdir()
+    (directory / "module.py").write_text("value = 1\n")
+    await git.git(directory, "init", "-b", "main")
+    await git.git(directory, "add", ".")
+    await git.git(
+        directory,
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@localhost",
+        "commit",
+        "-m",
+        "Initial",
+    )
+    return directory
+
+
+@pytest.fixture
+async def demo_run(store):
+    return await create_demo(Engine(store), default_config())

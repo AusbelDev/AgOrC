@@ -1,0 +1,41 @@
+# Copy to orchestrator.local.toml, or use `orchestrator init`.
+# Provider names are yours to choose. Models listed here are suggestions;
+# each role can use any model ID supported by its backend and account.
+[providers.codex]
+backend = "codex-cli"
+auth = "login"
+executable = "codex"
+models = ["gpt-6.1-sol"]
+
+[providers.gemini]
+backend = "gemini-cli"
+auth = "login"
+executable = "gemini"
+models = ["gemini-3.8-flash"]
+sandbox = false
+
+[roles.planner]
+provider = "codex"
+model = "gpt-6.1-sol"
+reasoning = "high"
+instructions = ""
+
+[roles.worker]
+provider = "gemini"
+model = "gemini-3.8-flash"
+reasoning = "medium"
+instructions = ""
+
+[roles.reviewer]
+provider = "codex"
+model = "gpt-6.1-sol"
+reasoning = "high"
+instructions = ""
+
+[workflow]
+max_revision_rounds = 2
+stage_timeout_seconds = 900
+run_timeout_seconds = 3600
+# Explicit argv arrays, executed in the task worktree without a shell.
+# Set these for the target project, e.g. [["uv", "run", "pytest"]].
+checks = []
