@@ -36,10 +36,18 @@ async def create_worktree(repo: Path, destination: Path, branch: str, base: str)
     await git(repo, "worktree", "add", "-b", branch, str(destination), base)
 
 
-async def diff(workspace: Path, base: str) -> str:
+def pathspec(ignored: tuple[str, ...]) -> list[str]:
+    return [".", *[f":(top,exclude,literal){path}" for path in ignored]]
+
+
+async def diff(workspace: Path, base: str, *, ignored: tuple[str, ...] = ()) -> str:
     # Include tracked, staged, and new files without changing the real Git index.
-    tracked = await git(workspace, "diff", "--no-ext-diff", "--no-textconv", base, "--")
-    names = await git(workspace, "ls-files", "--others", "--exclude-standard", "-z")
+    tracked = await git(
+        workspace, "diff", "--no-ext-diff", "--no-textconv", base, "--", *pathspec(ignored)
+    )
+    names = await git(
+        workspace, "ls-files", "--others", "--exclude-standard", "-z", "--", *pathspec(ignored)
+    )
     pieces = [tracked]
     for name in names.split("\0"):
         if not name:
@@ -65,11 +73,20 @@ async def diff(workspace: Path, base: str) -> str:
     return "\n".join(piece for piece in pieces if piece)
 
 
-async def fingerprint(workspace: Path, base: str) -> str:
+async def fingerprint(workspace: Path, base: str, *, ignored: tuple[str, ...] = ()) -> str:
     # Hash content as well as status, including binary edits and large diffs.
     head = await git(workspace, "rev-parse", "HEAD")
-    status = await git(workspace, "status", "--porcelain=v1", "-z")
-    paths = await git(workspace, "ls-files", "-z", "--cached", "--others", "--exclude-standard")
+    status = await git(workspace, "status", "--porcelain=v1", "-z", "--", *pathspec(ignored))
+    paths = await git(
+        workspace,
+        "ls-files",
+        "-z",
+        "--cached",
+        "--others",
+        "--exclude-standard",
+        "--",
+        *pathspec(ignored),
+    )
     return await asyncio.to_thread(_hash_files, workspace, head, status, paths)
 
 

@@ -14,23 +14,45 @@ executable = "agy"
 models = ["gemini-3.8-flash-medium"]
 sandbox = false
 
+[providers.claude]
+backend = "claude-cli"
+auth = "login"
+executable = "claude"
+# Native aliases, or enter a full model ID to pin a specific version.
+models = ["sonnet", "opus", "haiku"]
+sandbox = false
+
 [roles.planner]
 provider = "codex"
 model = "gpt-6.1-sol"
 reasoning = "high"
 instructions = ""
+skills = ["*"]
+required_skills = []
 
 [roles.worker]
 provider = "antigravity"
 model = "gemini-3.8-flash-medium"
 reasoning = "medium"
 instructions = ""
+skills = ["*"]
+# Add names of work skills that should apply every time, e.g. ["company-coding-rules"].
+required_skills = []
 
 [roles.reviewer]
 provider = "codex"
 model = "gpt-6.1-sol"
 reasoning = "high"
 instructions = ""
+skills = ["*"]
+required_skills = []
+
+[skills]
+# Discover each role's harness global skills automatically.
+inherit_global = true
+discover_project = true
+# Optional extra folders (or a path to SKILL.md). Relative paths use the config directory.
+paths = []
 
 [workflow]
 max_revision_rounds = 2

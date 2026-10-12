@@ -10,6 +10,12 @@ from orchestrator.engine import Engine, create_demo
 from orchestrator.store import Store
 
 
+@pytest.fixture(autouse=True)
+def isolate_global_skills(monkeypatch):
+    # Unit tests supply their own skill folders instead of reading the developer's library.
+    monkeypatch.setattr("orchestrator.skills.global_skill_roots", lambda backend: [])
+
+
 @pytest.fixture
 def store(tmp_path: Path):
     storage = Store(tmp_path / "state")

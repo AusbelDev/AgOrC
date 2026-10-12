@@ -11,11 +11,12 @@ from typing import Any
 import tomli_w
 
 ROLES = ("planner", "worker", "reviewer")
-BACKENDS = ("codex-cli", "agy-cli")
-EXECUTABLES = {"codex-cli": "codex", "agy-cli": "agy"}
+BACKENDS = ("codex-cli", "agy-cli", "claude-cli")
+EXECUTABLES = {"codex-cli": "codex", "agy-cli": "agy", "claude-cli": "claude"}
 EFFORTS = {
     "codex-cli": ("default", "none", "low", "medium", "high", "xhigh", "max"),
     "agy-cli": ("default", "low", "medium", "high", "xhigh", "max"),
+    "claude-cli": ("default", "low", "medium", "high", "xhigh", "max", "ultracode"),
 }
 
 
@@ -38,6 +39,15 @@ class Role:
     model: str
     reasoning: str = "default"
     instructions: str = ""
+    skills: list[str] = field(default_factory=lambda: ["*"])
+    required_skills: list[str] = field(default_factory=list)
+
+
+@dataclass
+class SkillSettings:
+    inherit_global: bool = True
+    discover_project: bool = True
+    paths: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -53,6 +63,7 @@ class Config:
     providers: dict[str, Provider]
     roles: dict[str, Role]
     workflow: Workflow = field(default_factory=Workflow)
+    skills: SkillSettings = field(default_factory=SkillSettings)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -66,8 +77,7 @@ class Config:
             if provider.backend not in BACKENDS:
                 raise ConfigError(
                     f"Provider {name}: backend {provider.backend!r} is not implemented. "
-                    "Available: codex-cli, agy-cli. "
-                    "Direct API and Claude Code adapters are planned."
+                    f"Available: {', '.join(BACKENDS)}. Direct API adapters are planned."
                 )
             if provider.auth != "login":
                 raise ConfigError(f"Provider {name}: only existing CLI logins are supported yet.")
@@ -95,6 +105,21 @@ class Config:
                 raise ConfigError(f"Role {name}: {backend} does not support {role.reasoning!r}.")
             if not isinstance(role.instructions, str):
                 raise ConfigError(f"Role {name}: instructions must be text.")
+            for setting in ("skills", "required_skills"):
+                values = getattr(role, setting)
+                if not isinstance(values, list) or not all(
+                    isinstance(value, str) and value.strip() for value in values
+                ):
+                    raise ConfigError(f"Role {name}: {setting} must be an array of skill names.")
+            if "*" in role.required_skills:
+                raise ConfigError(f"Role {name}: required_skills must name individual skills.")
+        for name in ("inherit_global", "discover_project"):
+            if type(getattr(self.skills, name)) is not bool:
+                raise ConfigError(f"skills.{name} must be a boolean.")
+        if not isinstance(self.skills.paths, list) or not all(
+            isinstance(path, str) and path.strip() for path in self.skills.paths
+        ):
+            raise ConfigError("skills.paths must be an array of local paths.")
         workflow = self.workflow
         for name in ("max_revision_rounds", "stage_timeout_seconds", "run_timeout_seconds"):
             value = getattr(workflow, name)
@@ -123,13 +148,14 @@ class Config:
                     + ". Save settings to persist the updated configuration.",
                     stacklevel=2,
                 )
-            unexpected = set(data) - {"providers", "roles", "workflow"}
+            unexpected = set(data) - {"providers", "roles", "workflow", "skills"}
             if unexpected:
                 raise ConfigError(f"Unknown configuration sections: {', '.join(unexpected)}")
             config = cls(
                 providers={key: Provider(**value) for key, value in data["providers"].items()},
                 roles={key: Role(**value) for key, value in data["roles"].items()},
                 workflow=Workflow(**data.get("workflow", {})),
+                skills=SkillSettings(**data.get("skills", {})),
             )
             return config.validate()
         except (TypeError, KeyError, AttributeError) as exc:
@@ -142,6 +168,9 @@ def default_config() -> Config:
             "codex": Provider("codex-cli", executable="codex", models=["gpt-6.1-sol"]),
             "antigravity": Provider(
                 "agy-cli", executable="agy", models=["gemini-3.8-flash-medium"]
+            ),
+            "claude": Provider(
+                "claude-cli", executable="claude", models=["sonnet", "opus", "haiku"]
             ),
         },
         roles={
@@ -190,7 +219,12 @@ def load_config(path: Path) -> Config:
         return default_config()
     try:
         with path.open("rb") as handle:
-            return Config.from_dict(tomllib.load(handle))
+            config = Config.from_dict(tomllib.load(handle))
+            config.skills.paths = [
+                str((path.parent / Path(source).expanduser()).resolve())
+                for source in config.skills.paths
+            ]
+            return config
     except tomllib.TOMLDecodeError as exc:
         raise ConfigError(f"Invalid TOML in {path}: {exc}") from exc
 

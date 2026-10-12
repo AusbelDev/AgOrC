@@ -33,6 +33,8 @@ class Run:
     checks: list[dict[str, Any]] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     implemented_notes: int = 0
+    skills: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    skills_prepared: bool = False
     fingerprint: str = ""
     elapsed_seconds: float = 0
     error: str = ""

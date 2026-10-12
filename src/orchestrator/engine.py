@@ -14,6 +14,14 @@ from . import git
 from .adapters import AgentRequest, BackendError, BackendRegistry
 from .config import Config, Role
 from .processes import run_process
+from .skills import (
+    cleanup_runtime,
+    discover_skills,
+    materialize_skills,
+    skill_prompt,
+    stage_skills,
+    validate_snapshot,
+)
 from .store import Run, Store
 
 Listener = Callable[[Run, dict[str, Any]], Awaitable[None]]
@@ -125,17 +133,66 @@ class Engine:
             raise ValueError("Enter a task description.")
         resolved = await asyncio.to_thread(lambda: repo.expanduser().resolve())
         root, base = await git.repository(resolved)
+        catalogs = await asyncio.to_thread(discover_skills, config, root)
         run_id = uuid.uuid4().hex[:12]
         workspace = self.store.root / "worktrees" / run_id
         branch = f"orchestrator/{run_id}"
+        manifest = await asyncio.to_thread(
+            stage_skills, catalogs, self.store.directory(run_id), "skills", config
+        )
         await git.create_worktree(root, workspace, branch, base)
         run = Run(
             run_id, task.strip(), str(root), str(workspace), branch, base, config.to_dict(), demo
         )
+        run.skills = manifest
+        run.skills_prepared = True
         run.fingerprint = await git.fingerprint(workspace, base)
         self.store.save(run)
         await self.emit(run, "created", f"Task workspace: {workspace}")
+        await self.announce_skills(run)
         return run
+
+    @staticmethod
+    def skill_directory(run: Run) -> str:
+        return f".orchestrator-skills-{run.id}"
+
+    def skill_paths(self, run: Run) -> tuple[str, ...]:
+        return (self.skill_directory(run),)
+
+    async def announce_skills(self, run: Run) -> None:
+        await self.emit(
+            run,
+            "skills",
+            "Skill catalogs prepared for each role.",
+            {
+                role: [
+                    {"name": item["name"], "required": item["required"], "source": item["source"]}
+                    for item in catalog
+                ]
+                for role, catalog in run.skills.items()
+            },
+        )
+
+    async def prepare_skills(self, run: Run, config: Config) -> None:
+        if not run.skills_prepared:
+            catalogs = await asyncio.to_thread(discover_skills, config, Path(run.repo))
+            preparation = asyncio.create_task(
+                asyncio.to_thread(
+                    stage_skills, catalogs, self.store.directory(run.id), "skills", config
+                )
+            )
+            try:
+                run.skills = await asyncio.shield(preparation)
+            except asyncio.CancelledError:
+                run.skills = await preparation
+                run.skills_prepared = True
+                self.store.save(run)
+                raise
+            run.skills_prepared = True
+            self.store.save(run)
+            await self.announce_skills(run)
+        await asyncio.to_thread(validate_snapshot, self.store.directory(run.id), run.skills)
+        await asyncio.to_thread(cleanup_runtime, Path(run.worktree), self.skill_directory(run))
 
     def pause(self) -> None:
         self.pause_requested = True
@@ -183,7 +240,7 @@ class Engine:
                 )
             schema = None
         else:
-            current_diff = await git.diff(workspace, run.base)
+            current_diff = await git.diff(workspace, run.base, ignored=self.skill_paths(run))
             self.store.artifact(run.id, "changes.diff", current_diff)
             prompt = context + (
                 f"\nPLAN AND ACCEPTANCE CRITERIA:\n{json.dumps(run.plan)}"
@@ -196,8 +253,7 @@ class Engine:
                 "for findings; use blocking only for issues that prevent acceptance."
             )
             schema = REVIEW_SCHEMA
-        self.store.artifact(run.id, f"{name}-{run.attempt}.prompt.txt", prompt)
-        before = await git.fingerprint(workspace, run.base)
+        before = await git.fingerprint(workspace, run.base, ignored=self.skill_paths(run))
         await self.emit(
             run, "stage", f"{name.title()} · {role.provider} / {role.model} / {role.reasoning}"
         )
@@ -206,18 +262,47 @@ class Engine:
             await self.emit(run, kind, message, data)
 
         registry = BackendRegistry(demo=True) if run.demo else self.registry
-        result = await registry.get(provider).run(
-            AgentRequest(
-                name,
-                role,
-                provider,
+        materialization = asyncio.create_task(
+            asyncio.to_thread(
+                materialize_skills,
+                self.store.directory(run.id),
                 workspace,
-                prompt,
-                schema,
-                config.workflow.stage_timeout_seconds,
-            ),
-            sink,
+                self.skill_directory(run),
+                run.skills.get(name, []),
+            )
         )
+        try:
+            catalog = await asyncio.shield(materialization)
+            prompt += await asyncio.to_thread(skill_prompt, workspace, catalog)
+            self.store.artifact(run.id, f"{name}-{run.attempt}.prompt.txt", prompt)
+            if catalog:
+                await self.emit(
+                    run,
+                    "skills",
+                    f"{name.title()}: {len(catalog)} skills available",
+                    {
+                        "role": name,
+                        "names": [skill["name"] for skill in catalog],
+                        "required": [skill["name"] for skill in catalog if skill["required"]],
+                    },
+                )
+            result = await registry.get(provider).run(
+                AgentRequest(
+                    name,
+                    role,
+                    provider,
+                    workspace,
+                    prompt,
+                    schema,
+                    config.workflow.stage_timeout_seconds,
+                ),
+                sink,
+            )
+            await asyncio.to_thread(validate_snapshot, workspace, {name: catalog})
+        finally:
+            # Cancellation must not race a background copy against its cleanup.
+            await asyncio.gather(materialization, return_exceptions=True)
+            await asyncio.to_thread(cleanup_runtime, workspace, self.skill_directory(run))
         self.store.artifact(run.id, f"{name}-{run.attempt}.response.txt", result.text)
         await self.emit(
             run,
@@ -231,7 +316,9 @@ class Engine:
             },
         )
         await git.validate_worktree(workspace, run.branch, run.base)
-        if name != "worker" and before != await git.fingerprint(workspace, run.base):
+        if name != "worker" and before != await git.fingerprint(
+            workspace, run.base, ignored=self.skill_paths(run)
+        ):
             raise BackendError(
                 f"The {name} modified the workspace. Inspect changes before resuming."
             )
@@ -280,12 +367,22 @@ class Engine:
             started = time.monotonic()
             try:
                 if run.config != config.to_dict():
-                    run.config = config.to_dict()
-                    await self.emit(
-                        run, "migration", "Migrated the saved Gemini CLI backend to Antigravity."
+                    migrated_backend = any(
+                        provider.get("backend") == "gemini-cli"
+                        for provider in run.config["providers"].values()
                     )
+                    run.config = config.to_dict()
+                    if migrated_backend:
+                        await self.emit(
+                            run,
+                            "migration",
+                            "Migrated the saved Gemini CLI backend to Antigravity.",
+                        )
                 await git.validate_worktree(Path(run.worktree), run.branch, run.base)
-                current = await git.fingerprint(Path(run.worktree), run.base)
+                await self.prepare_skills(run, config)
+                current = await git.fingerprint(
+                    Path(run.worktree), run.base, ignored=self.skill_paths(run)
+                )
                 if run.fingerprint != current and run.stage in ("checks", "reviewer"):
                     # External edits invalidate both check evidence and any pending review.
                     run.stage = "checks"
@@ -345,11 +442,15 @@ class Engine:
                                 await self.emit(run, "revision", f"Starting revision {run.attempt}")
                         else:
                             raise ValueError(f"Unknown saved stage: {run.stage}")
-                        run.fingerprint = await git.fingerprint(Path(run.worktree), run.base)
+                        run.fingerprint = await git.fingerprint(
+                            Path(run.worktree), run.base, ignored=self.skill_paths(run)
+                        )
                         self.store.save(run)
                 if run.stage == "done":
                     self.store.artifact(
-                        run.id, "changes.diff", await git.diff(Path(run.worktree), run.base)
+                        run.id,
+                        "changes.diff",
+                        await git.diff(Path(run.worktree), run.base, ignored=self.skill_paths(run)),
                     )
                     await self.emit(
                         run,
@@ -394,6 +495,12 @@ def report(run: Run) -> str:
     ]
     for name, role in roles.items():
         lines.append(f"- {name}: {role.provider} / {role.model} / {role.reasoning}")
+    if any(run.skills.values()):
+        lines += ["", "## Available skill snapshots", ""]
+        for name, catalog in run.skills.items():
+            for skill in catalog:
+                loading = "required" if skill["required"] else "when relevant"
+                lines.append(f"- {name}: {skill['name']} ({loading}); source: `{skill['source']}`")
     lines += ["", "## Plan", "", run.plan.get("summary", "No plan yet.")]
     lines += [f"- {step}" for step in run.plan.get("steps", [])]
     lines += ["", "## Acceptance criteria", ""]

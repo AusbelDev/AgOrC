@@ -1,6 +1,6 @@
 import asyncio
 
-from textual.widgets import Button, Input, Select, TextArea
+from textual.widgets import Button, DataTable, Input, RichLog, Select, TabbedContent, TextArea
 
 from orchestrator.config import default_config, load_config
 from orchestrator.tui import OrchestratorApp
@@ -33,4 +33,113 @@ async def test_tui_model_settings_and_offline_workflow(store, tmp_path):
             await asyncio.sleep(0.05)
         assert app.selected_run.status == "completed"
         assert app.selected_run.demo
+        if app.running_task is not None:
+            await asyncio.wait_for(app.running_task, timeout=5)
         assert "if values else 0" in app.query_one("#diff", TextArea).text
+
+
+async def test_tui_skill_catalog_and_required_settings(store, tmp_path, monkeypatch):
+    library = tmp_path / "global-skills"
+    directory = library / "work-guidelines"
+    directory.mkdir(parents=True)
+    (directory / "SKILL.md").write_text(
+        "---\nname: work-guidelines\ndescription: Use for company coding tasks.\n---\n"
+        "Follow our testing conventions.\n"
+    )
+    monkeypatch.setattr("orchestrator.skills.global_skill_roots", lambda backend: [library])
+    profile = tmp_path / "work.toml"
+    app = OrchestratorApp(default_config(), profile, store, tmp_path)
+    async with app.run_test(size=(150, 55)) as pilot:
+        app.query_one("#tabs", TabbedContent).active = "skills-tab"
+        await pilot.pause()
+        app.query_one("#worker-required-skills", Input).value = "work-guidelines"
+        await app.refresh_skills()
+        table = app.query_one("#skills-catalog", DataTable)
+        assert table.row_count == 3
+        assert any(table.get_row_at(index)[2] == "Required" for index in range(table.row_count))
+        app.query_one("#save", Button).scroll_visible(animate=False, immediate=True)
+        await pilot.pause()
+        await pilot.click("#save")
+        await pilot.pause()
+        assert load_config(profile).roles["worker"].required_skills == ["work-guidelines"]
+
+
+async def test_tui_claude_selection_and_small_terminal(store, tmp_path):
+    profile = tmp_path / "profile.toml"
+    app = OrchestratorApp(default_config(), profile, store, tmp_path)
+    async with app.run_test(size=(80, 24)) as pilot:
+        app.query_one("#worker-provider", Select).value = "claude"
+        await pilot.pause()
+        assert app.query_one("#worker-model", Input).value == "sonnet"
+        assert app.query_one("#worker-reasoning", Select).value == "medium"
+        app.query_one("#worker-model", Input).value = "claude-pinned-model"
+        app.query_one("#worker-provider", Select).value = "antigravity"
+        await pilot.pause()
+        app.query_one("#worker-provider", Select).value = "claude"
+        await pilot.pause()
+        assert app.query_one("#worker-model", Input).value == "claude-pinned-model"
+        app.query_one("#save", Button).scroll_visible(animate=False, immediate=True)
+        await pilot.pause()
+        await pilot.click("#save")
+        await pilot.pause()
+        saved = load_config(profile)
+        assert saved.roles["worker"].provider == "claude"
+        assert saved.roles["worker"].model == "claude-pinned-model"
+        app.start_launch(demo=True)
+        await asyncio.wait_for(app.running_task, timeout=5)
+        await pilot.pause()
+        assert app.query_one("#activity", RichLog).content_region.height > 0
+
+
+async def test_tui_stop_during_setup_saves_resumable_run_and_clears_diff(
+    store, project, tmp_path, monkeypatch
+):
+    app = OrchestratorApp(default_config(), tmp_path / "profile.toml", store, project)
+    started = asyncio.Event()
+    release = asyncio.Event()
+    original = app.engine.create
+
+    async def delayed_create(*args, **kwargs):
+        started.set()
+        await release.wait()
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(app.engine, "create", delayed_create)
+    async with app.run_test(size=(150, 55)):
+        app.query_one("#task", TextArea).load_text("Fix a bug")
+        app.query_one("#diff", TextArea).load_text("An old run's diff")
+        app.start_launch()
+        task = app.running_task
+        await asyncio.wait_for(started.wait(), timeout=5)
+        app.action_stop()
+        release.set()
+        await asyncio.wait_for(task, timeout=5)
+        assert app.selected_run.status == "paused"
+        assert store.get(app.selected_run.id).stage == "planner"
+        assert app.query_one("#diff", TextArea).text == ""
+        assert not app.query_one("#resume", Button).disabled
+        assert not any(event["kind"] == "stage" for event in store.events(app.selected_run.id))
+
+
+async def test_tui_relative_skill_paths_use_config_directory(store, tmp_path):
+    config_path = tmp_path / "profiles" / "work.toml"
+    app = OrchestratorApp(default_config(), config_path, store, tmp_path)
+    async with app.run_test(size=(150, 55)):
+        app.query_one("#skills-paths", TextArea).load_text('["team-skills"]')
+        assert app.form_config().skills.paths == [str(config_path.parent / "team-skills")]
+
+
+async def test_tui_failed_save_preserves_active_settings(store, tmp_path, monkeypatch):
+    app = OrchestratorApp(default_config(), tmp_path / "profile.toml", store, tmp_path)
+
+    def failed_save(*args):
+        raise OSError("Settings file is not writable")
+
+    monkeypatch.setattr("orchestrator.tui.save_config", failed_save)
+    async with app.run_test(size=(150, 55)) as pilot:
+        app.query_one("#worker-model", Input).value = "unsaved-model"
+        app.query_one("#save", Button).scroll_visible(animate=False, immediate=True)
+        await pilot.pause()
+        await pilot.click("#save")
+        await pilot.pause()
+        assert app.config.roles["worker"].model == "gemini-3.8-flash-medium"

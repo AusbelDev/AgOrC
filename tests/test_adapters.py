@@ -8,8 +8,10 @@ from orchestrator.adapters import (
     AgentRequest,
     AntigravityBackend,
     BackendError,
+    ClaudeBackend,
     CodexBackend,
     antigravity_command,
+    claude_command,
     codex_command,
     login_environment,
 )
@@ -59,12 +61,30 @@ def test_logins_do_not_inherit_api_keys(monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "private-key")
     monkeypatch.setenv("GOOGLE_GEMINI_BASE_URL", "https://custom-endpoint.invalid")
     monkeypatch.setenv("CODEX_HOME", "/tmp/existing-login")
+    for name in (
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "ANTHROPIC_BASE_URL",
+        "ANTHROPIC_PROFILE",
+        "CLAUDE_CODE_USE_BEDROCK",
+        "CLAUDE_CODE_USE_VERTEX",
+        "CLAUDE_CODE_USE_FOUNDRY",
+    ):
+        monkeypatch.setenv(name, "do-not-use")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", "/tmp/existing-claude-login")
     environment = login_environment()
     assert "OPENAI_API_KEY" not in environment
     assert "GEMINI_API_KEY" not in environment
     assert "GOOGLE_GEMINI_BASE_URL" not in environment
     assert "GEMINI_CLI_NO_RELAUNCH" not in environment
     assert environment["CODEX_HOME"] == "/tmp/existing-login"
+    assert "ANTHROPIC_API_KEY" not in environment
+    assert "ANTHROPIC_AUTH_TOKEN" not in environment
+    assert "ANTHROPIC_BASE_URL" not in environment
+    assert "CLAUDE_CODE_USE_BEDROCK" not in environment
+    assert "CLAUDE_CODE_USE_VERTEX" not in environment
+    assert "CLAUDE_CODE_USE_FOUNDRY" not in environment
+    assert environment["CLAUDE_CONFIG_DIR"] == "/tmp/existing-claude-login"
 
 
 def test_codex_scopes_and_reasoning(tmp_path):
@@ -261,3 +281,152 @@ async def test_antigravity_stdin_protocol_and_login_environment(tmp_path):
     script.chmod(0o755)
     req.provider.executable = str(script)
     assert (await AntigravityBackend().run(req, ignore)).text == "Fixed"
+
+
+def fake_claude(tmp_path, events, *, method="claude.ai", code=0):
+    path = tmp_path / "fake-claude"
+    login = {"authMethod": method, "loggedIn": method != "none"}
+    path.write_text(
+        f"#!{sys.executable}\nimport json, sys\n"
+        "if sys.argv[1:] == ['auth', 'status']:\n"
+        f"    print(json.dumps({login!r}))\n"
+        "    sys.exit(0)\n"
+        "assert sys.stdin.read() == 'Fix a bug'\n"
+        f"for event in {events!r}: print(json.dumps(event), flush=True)\n"
+        f"sys.exit({code})\n"
+    )
+    path.chmod(0o755)
+    return str(path)
+
+
+def claude_result(**extra):
+    return {
+        "type": "result",
+        "subtype": "success",
+        "is_error": False,
+        "result": "Fixed",
+        "session_id": "claude-1",
+        "usage": {"input_tokens": 20, "output_tokens": 8},
+        "modelUsage": {"claude-sonnet-4-6": {"inputTokens": 20}},
+        "total_cost_usd": 0.01,
+        **extra,
+    }
+
+
+def test_claude_tools_permissions_schema_and_effort(tmp_path):
+    req = request(tmp_path, provider="claude")
+    req.provider.executable = sys.executable
+    req.provider.sandbox = True
+    req.schema = {"type": "object"}
+    command = claude_command(req)
+    assert command[command.index("--model") + 1] == "sonnet"
+    assert command[command.index("--effort") + 1] == "medium"
+    assert command[command.index("--permission-mode") + 1] == "dontAsk"
+    assert command[command.index("--tools") + 1] == "Read,Glob,Grep,Edit,Write,Bash"
+    assert "Bash" not in command[command.index("--allowedTools") + 1]
+    assert "Edit(./**)" in command[command.index("--allowedTools") + 1]
+    assert command[command.index("--disallowedTools") + 1] == "mcp__*"
+    settings = json.loads(command[command.index("--settings") + 1])
+    assert settings["forceLoginMethod"] == "claudeai"
+    assert settings["sandbox"]["allowUnsandboxedCommands"] is False
+    assert json.loads(command[command.index("--json-schema") + 1]) == req.schema
+    assert "--no-session-persistence" in command
+    assert not any("bypass" in argument or "skip-permissions" in argument for argument in command)
+    req.role_name = "reviewer"
+    req.role.reasoning = "default"
+    command = claude_command(req)
+    assert command[command.index("--tools") + 1] == "Read,Glob,Grep"
+    assert "--effort" not in command
+
+
+async def test_claude_stream_terminal_result_and_native_alias(tmp_path):
+    req = request(tmp_path, provider="claude")
+    req.provider.executable = fake_claude(
+        tmp_path,
+        [
+            {"type": "system", "subtype": "init", "model": "claude-sonnet-4-6"},
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {"type": "text", "text": "Draft answer"},
+                        {"type": "tool_use", "name": "Edit"},
+                    ]
+                },
+            },
+            claude_result(),
+        ],
+    )
+    seen = []
+
+    async def collect(kind, message, data):
+        seen.append(message)
+
+    result = await ClaudeBackend().run(req, collect)
+    assert result.text == "Fixed"
+    assert result.session_id == "claude-1"
+    assert result.usage["input_tokens"] == 20
+    assert result.usage["total_cost_usd"] == 0.01
+    assert "Draft answer" in seen and "Edit" in seen
+
+
+async def test_claude_structured_output_is_authoritative(tmp_path):
+    req = request(tmp_path, role="planner", provider="claude")
+    req.schema = {"type": "object"}
+    req.provider.executable = fake_claude(tmp_path, [claude_result(structured_output={"ok": True})])
+    assert json.loads((await ClaudeBackend().run(req, ignore)).text) == {"ok": True}
+
+
+@pytest.mark.parametrize("method", ["api_key", "api_key_helper", "third_party", "none"])
+async def test_claude_rejects_non_subscription_auth_before_model_request(tmp_path, method):
+    req = request(tmp_path, provider="claude")
+    req.provider.executable = fake_claude(tmp_path, [], method=method)
+    with pytest.raises(BackendError, match="claude auth login"):
+        await ClaudeBackend().run(req, ignore)
+
+
+@pytest.mark.parametrize(
+    "events,code,message",
+    [
+        (
+            [{"type": "assistant", "message": {"content": [{"text": "Partial"}]}}],
+            0,
+            "No successful terminal result",
+        ),
+        (
+            [claude_result(subtype="error_max_turns", is_error=True, errors=["limit reached"])],
+            0,
+            "limit reached",
+        ),
+        ([claude_result()], 1, "exit 1"),
+        ([claude_result(), claude_result()], 0, "multiple results"),
+        ([["malformed"]], 0, "malformed event"),
+    ],
+)
+async def test_claude_incomplete_or_failed_stream_is_not_accepted(tmp_path, events, code, message):
+    req = request(tmp_path, provider="claude")
+    req.provider.executable = fake_claude(tmp_path, events, code=code)
+    with pytest.raises(BackendError, match=message):
+        await ClaudeBackend().run(req, ignore)
+
+
+async def test_claude_pinned_model_cannot_silently_change(tmp_path):
+    req = request(tmp_path, provider="claude")
+    req.role.model = "claude-sonnet-4-6"
+    req.provider.executable = fake_claude(
+        tmp_path,
+        [
+            {"type": "system", "subtype": "init", "model": "claude-opus-4-6"},
+            claude_result(),
+        ],
+    )
+    with pytest.raises(BackendError, match="instead of"):
+        await ClaudeBackend().run(req, ignore)
+
+
+async def test_claude_schema_result_must_include_structured_output(tmp_path):
+    req = request(tmp_path, role="planner", provider="claude")
+    req.schema = {"type": "object"}
+    req.provider.executable = fake_claude(tmp_path, [claude_result(result='{"ok":true}')])
+    with pytest.raises(BackendError, match="required structured output"):
+        await ClaudeBackend().run(req, ignore)

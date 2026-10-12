@@ -5,12 +5,14 @@ import json
 from pathlib import Path
 from typing import Any
 
+from rich.text import Text
 from textual import on
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.suggester import SuggestFromList
 from textual.widgets import (
     Button,
+    Checkbox,
     DataTable,
     Footer,
     Header,
@@ -27,6 +29,7 @@ from textual.widgets import (
 
 from .config import EFFORTS, ROLES, Config, Role, save_config
 from .engine import Engine, create_demo, report
+from .skills import discover_skills
 from .store import Run, Store
 
 
@@ -40,29 +43,53 @@ class OrchestratorApp(App):
         ("ctrl+r", "resume", "Resume"),
     ]
     CSS = """
-    Screen { background: $background; }
+    Screen { background: #0b1120; }
+    Header { background: #151f32; color: #e2e8f0; }
+    Footer { background: #151f32; }
     #layout { height: 1fr; }
-    #setup { width: 44; min-width: 32; padding: 1 2; border-right: solid $primary; }
-    #workspace { width: 1fr; padding: 0 1; }
-    .section { color: $accent; text-style: bold; margin-top: 1; margin-bottom: 1; }
-    .role-title { color: $text; text-style: bold; margin-top: 1; }
+    #setup { width: 42; min-width: 30; padding: 0 2 1 2;
+        background: #10192a; border-right: solid #26364d; }
+    #workspace { width: 1fr; padding: 1 2 0 2; }
+    .section { color: #67e8f9; text-style: bold; margin-top: 1; margin-bottom: 1; }
+    Label { color: #a8b8ce; }
+    .role-title { color: #e2e8f0; text-style: bold; margin-top: 1;
+        border-top: solid #26364d; padding-top: 1; width: 1fr; }
     Input, Select { margin-bottom: 1; }
+    Input, TextArea { background: #0b1120; border: tall #26364d; }
+    Input:focus, TextArea:focus { border: tall #67e8f9; }
+    Select > SelectCurrent { background: #0b1120; border: tall #26364d; }
+    Button { background: #1d2b42; border: tall #31435f; }
+    Button.-primary { background: #0e7490; color: #ffffff; border: tall #22d3ee; }
+    Button:focus { text-style: bold; border: tall #67e8f9; }
     #task { height: 7; }
     #checks { height: 5; }
-    #run-summary { height: auto; min-height: 3; padding: 1; background: $surface; }
-    #controls { height: auto; padding: 1 0; }
-    #controls Button { min-width: 9; margin-right: 1; }
-    #launch { height: auto; margin-top: 1; }
-    #launch Button { min-width: 12; margin-right: 1; }
-    #tabs { height: 1fr; }
-    #activity { height: 1fr; border: solid $panel; }
+    #run-summary { height: auto; min-height: 5; padding: 0 1;
+        background: #151f32; border: round #31435f; border-title-color: #a8b8ce; }
+    #workflow { height: 3; content-align: left middle; color: #71849f; }
+    #controls { height: auto; padding: 0 0 1 0; }
+    #controls Button { min-width: 8; width: 1fr; margin-right: 1; }
+    #controls Button:last-child { margin-right: 0; }
+    #launch { height: auto; margin-top: 1; margin-bottom: 1; }
+    #launch Button { min-width: 10; width: 1fr; }
+    #start { margin-right: 1; }
+    #save { width: 1fr; margin-top: 1; }
+    #tabs { height: 1fr; background: #10192a; }
+    TabPane { padding: 1; }
+    Tabs { background: #151f32; }
+    Tab { color: #a8b8ce; }
+    Tab.-active { color: #67e8f9; text-style: bold; }
+    #activity { height: 1fr; padding: 0 1; background: #10192a; }
     #diff { height: 1fr; }
     #history { height: 1fr; }
+    DataTable { background: #10192a; }
+    DataTable > .datatable--header { background: #1d2b42; color: #a8b8ce; }
     #steering { height: auto; margin-top: 1; }
     #steering Input { width: 1fr; }
-    #steering Button { min-width: 10; }
+    #steering Button { min-width: 8; margin-left: 1; }
     Markdown { padding: 1; }
     #profile-note { color: $text-muted; height: auto; }
+    #skills-paths { height: 4; }
+    #skills-catalog { height: 20; }
     """
 
     def __init__(self, config: Config, config_path: Path, store: Store, repo: Path) -> None:
@@ -74,6 +101,7 @@ class OrchestratorApp(App):
         self.engine = Engine(store, listener=self.receive_event)
         self.selected_run: Run | None = None
         self.running_task: asyncio.Task[None] | None = None
+        self.stop_requested = False
         self.selected_providers = {name: role.provider for name, role in config.roles.items()}
         self.model_choices = {
             name: {role.provider: role.model} for name, role in config.roles.items()
@@ -88,6 +116,9 @@ class OrchestratorApp(App):
                 yield Input(str(self.repo), id="repo")
                 yield Label("What should be changed?")
                 yield TextArea("", id="task")
+                with Horizontal(id="launch"):
+                    yield Button("Start task", variant="primary", id="start")
+                    yield Button("Offline demo", id="demo")
                 yield Label("MODELS", classes="section")
                 for name in ROLES:
                     role = self.config.roles[name]
@@ -126,16 +157,17 @@ class OrchestratorApp(App):
                 yield Input(
                     str(self.config.workflow.max_revision_rounds), type="integer", id="rounds"
                 )
-                with Horizontal(id="launch"):
-                    yield Button("Start task", variant="primary", id="start")
-                    yield Button("Offline demo", id="demo")
                 yield Button("Save settings", id="save")
             with Vertical(id="workspace"):
                 yield Static(
-                    "Ready · choose a repository and describe a task, or try the offline demo.",
+                    Text.assemble(
+                        ("● READY\n", "bold cyan"),
+                        ("Describe a task to begin, or explore the offline demo.", "#a8b8ce"),
+                    ),
                     id="run-summary",
                     markup=False,
                 )
+                yield Static(id="workflow")
                 with Horizontal(id="controls"):
                     yield Button("Pause", id="pause", disabled=True)
                     yield Button("Stop", id="stop", disabled=True)
@@ -158,6 +190,44 @@ class OrchestratorApp(App):
                         yield TextArea("", read_only=True, id="diff")
                     with TabPane("History", id="history-tab"):
                         yield DataTable(id="history", cursor_type="row")
+                    with TabPane("Skills", id="skills-tab"):
+                        with VerticalScroll():
+                            yield Checkbox(
+                                "Discover harness global skills",
+                                value=self.config.skills.inherit_global,
+                                id="skills-global",
+                            )
+                            yield Checkbox(
+                                "Discover project skills",
+                                value=self.config.skills.discover_project,
+                                id="skills-project",
+                            )
+                            yield Label("Extra skill folders (JSON array of paths)")
+                            yield TextArea(
+                                json.dumps(self.config.skills.paths, indent=2), id="skills-paths"
+                            )
+                            for name in ROLES:
+                                role = self.config.roles[name]
+                                yield Label(
+                                    f"{name.title()}: available skills (comma-separated; * = all)"
+                                )
+                                yield Input(
+                                    ", ".join(role.skills),
+                                    id=f"{name}-skills",
+                                    placeholder="*",
+                                )
+                                yield Label(f"{name.title()}: required skills (always included)")
+                                yield Input(
+                                    ", ".join(role.required_skills),
+                                    id=f"{name}-required-skills",
+                                )
+                            yield Button("Refresh skill catalog", id="refresh-skills")
+                            yield Static(
+                                "The catalog describes skills an agent can read when relevant. "
+                                "Required skills are included in that role's prompt.",
+                                markup=False,
+                            )
+                            yield DataTable(id="skills-catalog", cursor_type="row")
                 with Horizontal(id="steering"):
                     yield Input(placeholder="Additional instructions for the next stage", id="note")
                     yield Button("Send", id="send-note", disabled=True)
@@ -165,8 +235,21 @@ class OrchestratorApp(App):
 
     def on_mount(self) -> None:
         self.theme = "textual-dark"
+        self.query_one("#run-summary", Static).border_title = "RUN OVERVIEW"
+        self.update_workflow()
+        self.query_one("#activity", RichLog).write(
+            Text.assemble(
+                ("Welcome to Orchestrator\n", "bold #e2e8f0"),
+                ("Agent activity and check results will appear here.\n", "#a8b8ce"),
+                ("Start with Offline demo to explore a complete workflow.", "#67e8f9"),
+            )
+        )
         self.query_one("#history", DataTable).add_columns("Run", "Status", "Task", "Updated")
+        self.query_one("#skills-catalog", DataTable).add_columns(
+            "Role", "Skill", "Loading", "Source", "Description"
+        )
         self.refresh_history()
+        self.run_worker(self.refresh_skills(), group="skills", exclusive=True)
 
     @on(Select.Changed)
     def provider_changed(self, event: Select.Changed) -> None:
@@ -196,10 +279,50 @@ class OrchestratorApp(App):
                 model=self.query_one(f"#{name}-model", Input).value.strip(),
                 reasoning=str(self.query_one(f"#{name}-reasoning", Select).value),
                 instructions=self.config.roles[name].instructions,
+                skills=[
+                    value.strip()
+                    for value in self.query_one(f"#{name}-skills", Input).value.split(",")
+                    if value.strip()
+                ],
+                required_skills=[
+                    value.strip()
+                    for value in self.query_one(f"#{name}-required-skills", Input).value.split(",")
+                    if value.strip()
+                ],
             )
+        copied.skills.inherit_global = self.query_one("#skills-global", Checkbox).value
+        copied.skills.discover_project = self.query_one("#skills-project", Checkbox).value
+        copied.skills.paths = json.loads(self.query_one("#skills-paths", TextArea).text)
         copied.workflow.checks = json.loads(self.query_one("#checks", TextArea).text)
         copied.workflow.max_revision_rounds = int(self.query_one("#rounds", Input).value)
-        return copied.validate()
+        copied.validate()
+        copied.skills.paths = [
+            str((self.config_path.parent / Path(source).expanduser()).resolve())
+            for source in copied.skills.paths
+        ]
+        return copied
+
+    async def refresh_skills(self) -> None:
+        try:
+            config = self.form_config()
+            entered = self.query_one("#repo", Input).value
+            repo = await asyncio.to_thread(lambda: Path(entered).expanduser().resolve())
+            catalogs = await asyncio.to_thread(discover_skills, config, repo)
+            table = self.query_one("#skills-catalog", DataTable)
+            table.clear()
+            for role, catalog in catalogs.items():
+                for skill in catalog:
+                    table.add_row(
+                        role,
+                        skill.name,
+                        "Required"
+                        if skill.name in config.roles[role].required_skills
+                        else "When relevant",
+                        str(skill.source),
+                        skill.description,
+                    )
+        except (ValueError, OSError) as exc:
+            self.notify(str(exc), title="Skill discovery", severity="error", timeout=12)
 
     def refresh_history(self) -> None:
         table = self.query_one("#history", DataTable)
@@ -209,10 +332,22 @@ class OrchestratorApp(App):
 
     def show_run(self, run: Run) -> None:
         self.selected_run = run
+        status_color = {
+            "completed": "#86efac",
+            "needs_attention": "#fbbf24",
+            "failed": "#fda4af",
+            "paused": "#fbbf24",
+        }.get(run.status, "#67e8f9")
         self.query_one("#run-summary", Static).update(
-            f"{'OFFLINE DEMO · ' if run.demo else ''}{run.id} · {run.status.upper()} · "
-            f"{run.stage.title()} · revision {run.attempt}\n{run.worktree}"
+            Text.assemble(
+                (f"● {run.status.upper()}", f"bold {status_color}"),
+                (f"  ·  {run.id}", "#a8b8ce"),
+                ("  ·  OFFLINE DEMO" if run.demo else "", "#fbbf24"),
+                (f"\n{run.stage.title()}  ·  Revision {run.attempt}", "#e2e8f0"),
+                (f"\n{run.worktree}", "#a8b8ce"),
+            )
         )
+        self.update_workflow(run)
         plan = run.plan
         content = plan.get("summary", "No plan yet.")
         content += "\n\n" + "\n".join(
@@ -225,6 +360,37 @@ class OrchestratorApp(App):
         self.query_one("#plan", Markdown).update(content)
         self.query_one("#review", Markdown).update(report(run))
         self.update_controls()
+
+    def update_workflow(self, run: Run | None = None) -> None:
+        stages = [
+            ("planner", "Plan"),
+            ("worker", "Implement"),
+            ("checks", "Verify"),
+            ("reviewer", "Review"),
+        ]
+        content = Text()
+        for index, (stage, label) in enumerate(stages):
+            if index:
+                content.append("  ›  ", style="#31435f")
+            active = run is not None and run.stage == stage
+            content.append(label, style="bold #67e8f9" if active else "#71849f")
+        self.query_one("#workflow", Static).update(content)
+
+    @staticmethod
+    def format_event(event: dict[str, Any]) -> Text:
+        kind = event["kind"]
+        color = {
+            "agent": "#c4b5fd",
+            "log": "#a8b8ce",
+            "check-output": "#a8b8ce",
+            "usage": "#71849f",
+            "error": "#fda4af",
+        }.get(kind, "#67e8f9")
+        return Text.assemble(
+            (f"{event['time'][11:19]}  ", "#71849f"),
+            (f"{kind.upper():<12} ", color),
+            (str(event["message"]), "#e2e8f0"),
+        )
 
     def update_controls(self) -> None:
         running = self.running_task is not None and not self.running_task.done()
@@ -244,9 +410,7 @@ class OrchestratorApp(App):
     async def receive_event(self, run: Run, event: dict[str, Any]) -> None:
         if event["kind"] not in ("agent", "log", "check-output", "usage"):
             self.show_run(run)
-        self.query_one("#activity", RichLog).write(
-            f"{event['time'][11:19]}  {event['kind']}  {event['message']}"
-        )
+        self.query_one("#activity", RichLog).write(self.format_event(event))
 
     async def launch(self, *, demo: bool = False, resume: bool = False) -> None:
         try:
@@ -265,8 +429,15 @@ class OrchestratorApp(App):
                         config,
                     )
             self.query_one("#activity", RichLog).clear()
+            self.query_one("#diff", TextArea).load_text("")
             self.query_one("#tabs", TabbedContent).active = "activity-tab"
             self.show_run(run)
+            if self.stop_requested:
+                run.status = "paused"
+                run.error = "Stopped before the first stage started."
+                self.store.save(run)
+                self.show_run(run)
+                return
             finished = await self.engine.execute(run.id)
             self.show_run(finished)
             diff_path = self.store.directory(run.id) / "changes.diff"
@@ -283,6 +454,7 @@ class OrchestratorApp(App):
         if self.running_task and not self.running_task.done():
             return
         self.running_task = asyncio.create_task(self.launch(**kwargs))
+        self.stop_requested = False
         self.update_controls()
 
     @on(Button.Pressed)
@@ -300,11 +472,14 @@ class OrchestratorApp(App):
             self.action_stop()
         elif name == "save":
             try:
-                self.config = self.form_config()
-                save_config(self.config, self.config_path)
+                configured = self.form_config()
+                save_config(configured, self.config_path)
+                self.config = configured
                 self.notify(f"Saved to {self.config_path}")
             except (ValueError, OSError) as exc:
                 self.notify(str(exc), severity="error")
+        elif name == "refresh-skills":
+            self.run_worker(self.refresh_skills(), group="skills", exclusive=True)
         elif name == "send-note":
             note = self.query_one("#note", Input).value.strip()
             if note and self.selected_run:
@@ -329,7 +504,7 @@ class OrchestratorApp(App):
         activity = self.query_one("#activity", RichLog)
         activity.clear()
         for item in self.store.events(run.id):
-            activity.write(f"{item['time'][11:19]}  {item['kind']}  {item['message']}")
+            activity.write(self.format_event(item))
         diff_path = self.store.directory(run.id) / "changes.diff"
         self.query_one("#diff", TextArea).load_text(
             diff_path.read_text(encoding="utf-8") if diff_path.exists() else ""
@@ -337,12 +512,20 @@ class OrchestratorApp(App):
 
     def action_pause(self) -> None:
         if self.running_task:
-            self.engine.pause()
-            self.notify("Will pause when the current stage finishes.")
+            if self.engine.active:
+                self.engine.pause()
+                self.notify("Will pause when the current stage finishes.")
+            else:
+                self.stop_requested = True
+                self.notify("Will pause when workspace setup finishes.")
 
     def action_stop(self) -> None:
-        if self.running_task and self.engine.active:
-            self.running_task.cancel()
+        if self.running_task:
+            self.stop_requested = True
+            if self.engine.active:
+                self.running_task.cancel()
+            else:
+                self.notify("Will stop when workspace setup finishes.")
 
     def action_resume(self) -> None:
         if self.selected_run and self.selected_run.status not in ("completed", "needs_attention"):

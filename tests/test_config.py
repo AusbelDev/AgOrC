@@ -19,7 +19,7 @@ def test_provider_names_and_custom_models_round_trip(tmp_path):
     "field,value,message",
     [
         ("auth", "api", "only existing CLI logins"),
-        ("backend", "claude-cli", "not implemented"),
+        ("backend", "unsupported-cli", "not implemented"),
         ("sandbox", "false", "boolean"),
     ],
 )
@@ -90,3 +90,14 @@ def test_legacy_custom_executable_requires_explicit_update():
     data["providers"]["work-google"]["executable"] = "my-custom-gemini-wrapper"
     with pytest.raises(ConfigError, match="update the custom Gemini executable"):
         Config.from_dict(data)
+
+
+def test_claude_roles_round_trip_with_custom_provider_model_and_effort(tmp_path):
+    config = default_config()
+    config.providers["work-claude"] = config.providers.pop("claude")
+    config.roles["worker"].provider = "work-claude"
+    config.roles["worker"].model = "claude-custom-model"
+    config.roles["worker"].reasoning = "max"
+    path = tmp_path / "claude.toml"
+    save_config(config, path)
+    assert load_config(path).to_dict() == config.to_dict()

@@ -10,6 +10,7 @@ from pathlib import Path
 
 from .config import (
     EXECUTABLES,
+    ROLES,
     ConfigError,
     default_config,
     default_state_dir,
@@ -39,8 +40,17 @@ def parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Also make a minimal model request per distinct role configuration (uses quota)",
     )
+    diagnostics.add_argument(
+        "--skills",
+        action="store_true",
+        help="With --live, verify reading a temporary skill and its reference file",
+    )
     terminal = commands.add_parser("tui", help="Open the terminal interface (default)")
     terminal.add_argument("--repo", type=Path, default=Path.cwd())
+    skills = commands.add_parser("skills", help="Inspect skills available to each role")
+    skills.add_argument("--repo", type=Path, default=Path.cwd())
+    skills.add_argument("--role", choices=(*ROLES, "all"), default="all")
+    skills.add_argument("--json", action="store_true", help="Print the skill catalog as JSON")
     run = commands.add_parser("run", help="Run a task without the TUI")
     run.add_argument("task", help="Task description, or - to read from stdin")
     run.add_argument("--repo", type=Path, default=Path.cwd())
@@ -59,9 +69,13 @@ def parser() -> argparse.ArgumentParser:
     return result
 
 
-async def doctor(config, *, live: bool = False) -> int:
+async def doctor(config, *, live: bool = False, test_skills: bool = False) -> int:
     missing = False
+    active_providers = {role.provider for role in config.roles.values()}
     for name, provider in config.providers.items():
+        if name not in active_providers:
+            print(f"{name}: unused by current roles (not checked)")
+            continue
         command = provider.executable or EXECUTABLES[provider.backend]
         location = shutil.which(command)
         if not location:
@@ -85,6 +99,15 @@ async def doctor(config, *, live: bool = False) -> int:
             if status.code or "ChatGPT" not in login:
                 missing = True
                 print("  A ChatGPT login is required for this adapter.")
+        elif provider.backend == "claude-cli":
+            from .adapters import BackendError, claude_login_status
+
+            try:
+                method = await claude_login_status(provider, Path.cwd())
+                print(f"  Logged in using {method}.")
+            except BackendError as exc:
+                print(f"  {exc}")
+                missing = True
         else:
             print(
                 "  Antigravity login is managed by agy; sign in with `agy` if needed. "
@@ -105,6 +128,50 @@ async def doctor(config, *, live: bool = False) -> int:
         with tempfile.TemporaryDirectory(prefix="orchestrator-login-check-") as temporary:
             workspace = Path(temporary)
             await git.git(workspace, "init", "-b", "main")
+            prompt = 'Do not use any tools. Return only the JSON object {"ok":true}.'
+            expected = {"ok": True}
+            schema = {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {"ok": {"type": "boolean"}},
+                "required": ["ok"],
+            }
+            if test_skills:
+                import uuid
+
+                from .skills import read_skill, skill_prompt, stage_skills
+
+                fixture = workspace / "skill-fixture"
+                fixture.mkdir()
+                references = fixture / "references"
+                references.mkdir()
+                token = uuid.uuid4().hex
+                (references / "marker.txt").write_text(token, encoding="utf-8")
+                (fixture / "SKILL.md").write_text(
+                    "---\nname: local-skill-check\ndescription: Use for skill diagnostics.\n---\n"
+                    "Read references/marker.txt relative to this skill's directory. Return only "
+                    "a JSON object with the token field containing that file's exact contents.\n",
+                    encoding="utf-8",
+                )
+                configured = type(config).from_dict(config.to_dict())
+                for role in configured.roles.values():
+                    role.required_skills = []
+                skill = read_skill(fixture / "SKILL.md", "diagnostic")
+                catalog = stage_skills(
+                    {role: [skill] for role in ROLES}, workspace, "skill-snapshot", configured
+                )
+                prompt = (
+                    "Use only the supplied local-skill-check skill and its reference. "
+                    "Do not use other skills or edit any files. Return the requested JSON.\n"
+                    + skill_prompt(workspace, catalog["planner"])
+                )
+                expected = {"token": token}
+                schema = {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {"token": {"type": "string"}},
+                    "required": ["token"],
+                }
             for role in config.roles.values():
                 identity = (role.provider, role.model, role.reasoning)
                 if identity in checked:
@@ -122,13 +189,8 @@ async def doctor(config, *, live: bool = False) -> int:
                         role,
                         provider,
                         workspace,
-                        'Do not use any tools. Return only the JSON object {"ok":true}.',
-                        {
-                            "type": "object",
-                            "additionalProperties": False,
-                            "properties": {"ok": {"type": "boolean"}},
-                            "required": ["ok"],
-                        },
+                        prompt,
+                        schema,
                         timeout=90,
                     ),
                     ignore,
@@ -136,9 +198,14 @@ async def doctor(config, *, live: bool = False) -> int:
                 response = result.text.strip()
                 if response.startswith("```") and response.endswith("```"):
                     response = "\n".join(response.splitlines()[1:-1])
-                if json.loads(response) != {"ok": True}:
+                if json.loads(response) != expected:
                     raise ValueError(f"Unexpected live response from {role.provider}.")
-                print("  Login and model request succeeded.", flush=True)
+                print(
+                    "  Skill instructions and reference file read succeeded."
+                    if test_skills
+                    else "  Login and model request succeeded.",
+                    flush=True,
+                )
     return 1 if missing else 0
 
 
@@ -175,8 +242,49 @@ def main() -> None:
             print(f"Created {args.config}")
             return
         config = load_config(args.config)
+        if args.command == "skills":
+            from .skills import discover_skills
+
+            catalogs = discover_skills(config, args.repo.expanduser().resolve())
+            selected = ROLES if args.role == "all" else (args.role,)
+            if args.json:
+                print(
+                    json.dumps(
+                        {
+                            role: [
+                                {
+                                    "name": skill.name,
+                                    "description": skill.description,
+                                    "source": str(skill.source),
+                                    "scope": skill.scope,
+                                    "required": skill.name in config.roles[role].required_skills,
+                                }
+                                for skill in catalogs[role]
+                            ]
+                            for role in selected
+                        },
+                        indent=2,
+                    )
+                )
+            else:
+                for role in selected:
+                    backend = config.providers[config.roles[role].provider].backend
+                    print(f"{role} ({backend})")
+                    for skill in catalogs[role]:
+                        loading = (
+                            "required"
+                            if skill.name in config.roles[role].required_skills
+                            else "when relevant"
+                        )
+                        print(f"  {skill.name} [{loading}] — {skill.description}")
+                        print(f"    {skill.source}")
+                    if not catalogs[role]:
+                        print("  No skills available.")
+            return
         if args.command == "doctor":
-            code = asyncio.run(doctor(config, live=args.live))
+            if args.skills and not args.live:
+                raise ValueError("doctor --skills requires --live; it makes a model request.")
+            code = asyncio.run(doctor(config, live=args.live, test_skills=args.skills))
         else:
             store = Store(args.state_dir)
             if args.command == "history":

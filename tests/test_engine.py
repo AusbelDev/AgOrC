@@ -247,3 +247,43 @@ async def test_historical_report_retains_legacy_model_id(store, project):
 def test_invalid_review_never_counts_as_acceptance(payload):
     with pytest.raises(BackendError):
         parse_response(json.dumps(payload), "reviewer")
+
+
+async def test_claude_cli_end_to_end_uses_structured_roles_and_real_checks(
+    store, project, tmp_path
+):
+    cli = tmp_path / "claude-fixture"
+    cli.write_text(
+        f"#!{sys.executable}\nimport json, sys\nfrom pathlib import Path\n"
+        "if sys.argv[1:] == ['auth', 'status']:\n"
+        "    print(json.dumps({'authMethod': 'claude.ai', 'loggedIn': True}))\n"
+        "    sys.exit(0)\n"
+        "prompt = sys.stdin.read()\n"
+        "assert 'Fix value' in prompt\n"
+        "result = {'type': 'result', 'subtype': 'success', 'is_error': False, 'result': 'Fixed'}\n"
+        "if '--json-schema' in sys.argv:\n"
+        "    schema = json.loads(sys.argv[sys.argv.index('--json-schema') + 1])\n"
+        f"    result['structured_output'] = {PLAN!r} "
+        f"if 'steps' in schema['properties'] else {ACCEPT!r}\n"
+        "    assert sys.argv[sys.argv.index('--tools') + 1] == 'Read,Glob,Grep'\n"
+        "else:\n"
+        "    Path('module.py').write_text('value = 2\\n')\n"
+        "print(json.dumps({'type': 'system', 'subtype': 'init', 'model': 'claude-sonnet-4-6'}))\n"
+        "print(json.dumps(result))\n"
+    )
+    cli.chmod(0o755)
+    config = default_config()
+    config.providers["claude"].executable = str(cli)
+    for role in config.roles.values():
+        role.provider = "claude"
+        role.model = "sonnet"
+    config.workflow.checks = [[sys.executable, "-c", "from module import value; assert value == 2"]]
+    engine = Engine(store)
+    run = await engine.create("Fix value", project, config)
+    finished = await engine.execute(run.id)
+    assert finished.status == "completed", finished.error
+    assert finished.plan == PLAN
+    assert finished.review == ACCEPT
+    assert finished.checks[0]["code"] == 0
+    assert (project / "module.py").read_text() == "value = 1\n"
+    assert "+value = 2" in (store.directory(run.id) / "changes.diff").read_text()

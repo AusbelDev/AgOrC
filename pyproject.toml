@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "A configurable terminal workflow for planning, implementing, and reviewing code."
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = ["textual>=1.0,<9", "tomli-w>=1.2,<2"]
+dependencies = ["textual>=1.0,<9", "tomli-w>=1.2,<2", "pyyaml>=6,<7"]
 
 [project.scripts]
 orchestrator = "orchestrator.cli:main"
