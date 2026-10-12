@@ -9,26 +9,66 @@ with high reasoning for planning/review, and Gemini 3.8 Flash with medium thinki
 Model IDs are editable; the backend and your account must support the selected model. The app does not silently
 substitute another configured model.
 
-## Start
+## Quick start
 
-Requires Python 3.11+, [uv](https://docs.astral.sh/uv/), and a Linux or macOS terminal. Tested locally
-against Codex CLI 0.162.1 and Antigravity CLI (`agy`) 1.3.3's command surfaces.
+You need Python 3.11+, [uv](https://docs.astral.sh/uv/), a Linux or macOS terminal, and a target Git
+repository with at least one commit. Install the CLIs for your chosen providers and make their
+commands available on `PATH`: `codex`, `agy`, and/or `claude`. The default roles use Codex and
+Antigravity; Claude Code is optional.
 
-```sh
-uv sync
-uv run orchestrator init
-uv run orchestrator doctor
-uv run orchestrator
-```
+1. **Set up the app.** From your Orchestrator checkout, install dependencies and create the profile:
 
-Log in outside the app if needed:
+   ```sh
+   cd /path/to/orchestrator
+   uv sync
+   uv run orchestrator init
+   ```
 
-```sh
-codex login
-agy
-# If you select Claude Code for a role:
-claude auth login
-```
+   `init` creates `orchestrator.local.toml`; run it once. If that file already exists, keep it and
+   skip `init`. Provider definitions and additional role instructions can be edited in this file.
+
+2. **Sign in to the providers you will use.** Run the relevant commands in your normal terminal;
+   existing logins can be reused:
+
+   ```sh
+   codex login            # Choose ChatGPT login.
+   agy                    # Complete Antigravity sign-in.
+   claude auth login      # Only needed for Claude Code roles.
+   ```
+
+3. **Open the TUI for your project.** Continue running from the Orchestrator checkout:
+
+   ```sh
+   uv run orchestrator tui --repo /absolute/path/to/your/project
+   ```
+
+   `uv run orchestrator` also opens the TUI, with the current directory as the initial repository.
+   Try **Offline demo** first to see a complete bug fix and its checks without using model quota.
+
+4. **Configure your task.** Confirm **Repository**, describe the bug or change under **What should
+   be changed?**, and choose each role's provider, model ID, and reasoning level under **MODELS**.
+   Scroll the left panel to **VERIFICATION** and enter your project's checks as JSON argv arrays,
+   for example `[ ["uv", "run", "pytest"] ]` for a Python project using uv. These commands run in
+   the task worktree. In **Skills**, click **Refresh skill catalog** and enter any required work
+   skills by name. Click **Save settings** to reuse your choices for future runs.
+
+   You can quit with `Ctrl+Q` and check the saved provider setup before starting a real task:
+
+   ```sh
+   uv run orchestrator doctor
+   uv run orchestrator doctor --live   # Optional: makes model requests and uses account quota.
+   uv run orchestrator tui --repo /absolute/path/to/your/project
+   ```
+
+5. **Run and inspect the result.** Click **Start task**. Watch **Activity** and the workflow
+   indicator; inspect **Plan**, **Review**, and **Diff** as the run progresses. **Pause** (`Ctrl+P`)
+   waits for the current stage to finish, **Stop** (`Ctrl+X`) interrupts it, and **Resume** (`Ctrl+R`)
+   retries the pending stage. Use the instruction field and **Send** to steer the next stage.
+   Open **History** to revisit saved runs. The run overview shows the generated worktree path:
+   inspect and test the changes there before committing or merging them yourself. Your original
+   checkout keeps its existing changes; uncommitted changes are not copied into the task worktree.
+
+Tested locally against Codex CLI 0.162.1 and Antigravity CLI (`agy`) 1.3.3's command surfaces.
 
 Choose ChatGPT login in Codex and complete sign-in in `agy`. Antigravity's command is `agy`,
 even though this app names its backend `agy-cli`. Its sign-in is separate from the retired Gemini
@@ -43,8 +83,8 @@ subcommand, so a local check does not claim that its account is authenticated. U
 `uv run orchestrator doctor --live` to verify each distinct role configuration with a minimal model
 request. This uses account quota. Expired logins fail visibly; run `agy` to sign in and then resume.
 
-Try the **Offline demo** button to fix a small real bug in a generated sample project, run its tests,
-and inspect the diff without contacting a provider. From the command line:
+The **Offline demo** fixes a small real bug in a generated sample project, runs its tests, and shows
+the diff without contacting a provider. You can also run it from the command line:
 
 ```sh
 uv run orchestrator demo
