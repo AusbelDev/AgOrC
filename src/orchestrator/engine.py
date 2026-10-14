@@ -12,6 +12,7 @@ from typing import Any
 
 from . import git
 from .adapters import AgentRequest, BackendError, BackendRegistry
+from .compat import timeout
 from .config import Config, Role
 from .processes import run_process
 from .skills import (
@@ -348,7 +349,7 @@ class Engine:
                     "stdout": result.stdout,
                     "stderr": result.stderr,
                 }
-            except (OSError, TimeoutError) as exc:
+            except (OSError, asyncio.TimeoutError) as exc:
                 entry = {"argv": command, "code": -1, "stdout": "", "stderr": str(exc)}
             run.checks.append(entry)
             self.store.save(run)
@@ -396,8 +397,8 @@ class Engine:
                 self.store.save(run)
                 remaining = config.workflow.run_timeout_seconds - run.elapsed_seconds
                 if remaining <= 0:
-                    raise TimeoutError("The run has exhausted its configured time budget.")
-                async with asyncio.timeout(remaining):
+                    raise asyncio.TimeoutError("The run has exhausted its configured time budget.")
+                async with timeout(remaining):
                     while run.stage != "done":
                         await git.validate_worktree(Path(run.worktree), run.branch, run.base)
                         if self.pause_requested:

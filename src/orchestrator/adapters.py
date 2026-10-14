@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
+from .compat import timeout
 from .config import EXECUTABLES, Provider, Role
 from .processes import run_process
 
@@ -357,7 +358,7 @@ def claude_model_matches(requested: str, actual: str) -> bool:
 
 class ClaudeBackend:
     async def run(self, request: AgentRequest, emit: EventSink) -> AgentResult:
-        async with asyncio.timeout(request.timeout):
+        async with timeout(request.timeout):
             return await self._run(request, emit)
 
     async def _run(self, request: AgentRequest, emit: EventSink) -> AgentResult:

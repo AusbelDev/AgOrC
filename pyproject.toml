@@ -3,8 +3,14 @@ name = "personal-code-orchestrator"
 version = "0.1.0"
 description = "A configurable terminal workflow for planning, implementing, and reviewing code."
 readme = "README.md"
-requires-python = ">=3.11"
-dependencies = ["textual>=1.0,<9", "tomli-w>=1.2,<2", "pyyaml>=6,<7"]
+requires-python = ">=3.9"
+dependencies = [
+    "textual>=1.0,<9",
+    "tomli-w>=1.2,<2",
+    "pyyaml>=6,<7",
+    "tomli>=2,<3; python_version < '3.11'",
+    "async-timeout>=5,<6; python_version < '3.11'",
+]
 
 [project.scripts]
 orchestrator = "orchestrator.cli:main"
@@ -25,6 +31,7 @@ testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 100
+target-version = "py39"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "ASYNC"]

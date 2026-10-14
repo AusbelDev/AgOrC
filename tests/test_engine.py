@@ -94,6 +94,23 @@ async def test_failed_checks_cannot_be_overruled_by_reviewer(store, project):
     assert finished.checks[0]["code"] == 1
 
 
+async def test_check_timeout_is_recorded_and_cannot_be_overruled(store, project, monkeypatch):
+    async def timed_out(*args, **kwargs):
+        raise asyncio.TimeoutError("Verification timed out")
+
+    monkeypatch.setattr("orchestrator.engine.run_process", timed_out)
+    engine = engine_for(store, ScriptedBackend())
+    config = default_config()
+    config.workflow.max_revision_rounds = 0
+    config.workflow.checks = [[sys.executable, "-c", "pass"]]
+    run = await engine.create("Fix value", project, config)
+    finished = await engine.execute(run.id)
+    assert finished.status == "needs_attention"
+    assert finished.checks[0]["code"] == -1
+    assert finished.checks[0]["stderr"] == "Verification timed out"
+    assert finished.review["accepted"] is True
+
+
 async def test_pause_resume_keeps_config_and_rechecks_external_changes(store, project):
     backend = ScriptedBackend()
     engine = engine_for(store, backend)

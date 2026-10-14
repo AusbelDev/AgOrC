@@ -11,7 +11,7 @@ substitute another configured model.
 
 ## Quick start
 
-You need Python 3.11+, [uv](https://docs.astral.sh/uv/), a Linux or macOS terminal, and a target Git
+You need Python 3.9+, [uv](https://docs.astral.sh/uv/), a Linux or macOS terminal, and a target Git
 repository with at least one commit. Install the CLIs for your chosen providers and make their
 commands available on `PATH`: `codex`, `agy`, and/or `claude`. The default roles use Codex and
 Antigravity; Claude Code is optional.
@@ -89,6 +89,27 @@ the diff without contacting a provider. You can also run it from the command lin
 ```sh
 uv run orchestrator demo
 ```
+
+## Python 3.9 containers
+
+Python 3.9 is supported. Inside your existing container, install from the Orchestrator checkout
+using its Python interpreter:
+
+```sh
+python3.9 -m venv /opt/orchestrator-venv
+/opt/orchestrator-venv/bin/python -m pip install /path/to/orchestrator
+/opt/orchestrator-venv/bin/orchestrator init
+/opt/orchestrator-venv/bin/orchestrator tui --repo /path/to/project
+```
+
+With uv, use `uv sync --python 3.9` and the usual `uv run orchestrator ...` commands. The
+installation selects compatible dependencies and adds TOML/async timeout backports on Python 3.9
+and 3.10; Python 3.11+ uses the standard library.
+
+The container needs Git, your selected provider CLIs on `PATH`, and their logins available to the
+container user. Mount the target repository and persist the configured state directory to retain
+history and worktrees. Start the container with `docker run -it` for the TUI. Run
+`orchestrator demo` to check the installation without provider credentials.
 
 ## Configuration and profiles
 

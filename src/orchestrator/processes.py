@@ -8,6 +8,8 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from .compat import timeout as async_timeout
+
 LineCallback = Callable[[str, str], Awaitable[None]]
 
 
@@ -29,7 +31,7 @@ async def stop_process(process: asyncio.subprocess.Process) -> None:
         return
     try:
         await asyncio.wait_for(process.wait(), 2)
-    except TimeoutError:
+    except asyncio.TimeoutError:
         try:
             if os.name == "posix":
                 os.killpg(process.pid, signal.SIGKILL)
@@ -53,7 +55,7 @@ async def run_process(
     input_text: str | None = None,
     env: dict[str, str] | None = None,
     on_line: LineCallback | None = None,
-    timeout: float = 900,  # noqa: ASYNC109 - deadline is enforced below with asyncio.timeout
+    timeout: float = 900,  # noqa: ASYNC109 - deadline is enforced below with async_timeout
     capture_limit: int | None = 100000,
 ) -> ProcessResult:
     process = await asyncio.create_subprocess_exec(
@@ -98,7 +100,7 @@ async def run_process(
     ]
     succeeded = False
     try:
-        async with asyncio.timeout(timeout):
+        async with async_timeout(timeout):
             await asyncio.gather(*tasks)
             code = await process.wait()
             succeeded = True

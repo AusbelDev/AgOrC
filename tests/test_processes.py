@@ -39,7 +39,7 @@ async def test_timeout_terminates_spawned_process_group(tmp_path):
     child = f"import time; from pathlib import Path; time.sleep(1); Path({str(marker)!r}).touch()"
     script = f"import subprocess, sys, time; subprocess.Popen([sys.executable, '-c', {child!r}]); "
     script += "time.sleep(20)"
-    with pytest.raises(TimeoutError):
+    with pytest.raises(asyncio.TimeoutError):
         await run_process([sys.executable, "-c", script], tmp_path, timeout=0.2)
     await asyncio.sleep(1.1)
     assert not marker.exists()

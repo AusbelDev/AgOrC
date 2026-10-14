@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import tomllib
 import warnings
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field
@@ -9,6 +8,8 @@ from pathlib import Path
 from typing import Any
 
 import tomli_w
+
+from .compat import tomllib
 
 ROLES = ("planner", "worker", "reviewer")
 BACKENDS = ("codex-cli", "agy-cli", "claude-cli")
