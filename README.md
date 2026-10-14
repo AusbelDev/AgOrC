@@ -357,15 +357,19 @@ instruction alone does not connect a server or grant its tools permission.
 
 ## Python 3.9 containers
 
-Python 3.9 is supported. Inside your existing container, install from the Orchestrator checkout
-using its Python interpreter:
+Python 3.9 is supported. Inside your existing container, run as the same normal user who configured
+Codex/Claude and their MCP connections. Create a virtualenv under that user's home so installation
+and updates do not require `sudo`. Run these commands from the Orchestrator checkout:
 
 ```sh
-python3.9 -m venv /opt/orchestrator-venv
-/opt/orchestrator-venv/bin/python -m pip install /path/to/orchestrator
-/opt/orchestrator-venv/bin/orchestrator init
-/opt/orchestrator-venv/bin/orchestrator tui --repo /path/to/project
+python3.9 -m venv "$HOME/.venvs/orchestrator"
+"$HOME/.venvs/orchestrator/bin/python" -m pip install .
+"$HOME/.venvs/orchestrator/bin/orchestrator" init
+"$HOME/.venvs/orchestrator/bin/orchestrator" tui --repo /path/to/project
 ```
+
+Skip `init` if your configuration already exists. Keep the same working directory, profile, and
+state directory when changing virtualenvs to retain your settings and history.
 
 With uv, use `uv sync --python 3.9` and the usual `uv run orchestrator ...` commands. The
 installation selects compatible dependencies and adds TOML/async timeout backports on Python 3.9
@@ -405,8 +409,8 @@ again when updating.
    **For the pip virtualenv from the container example above:**
 
    ```sh
-   /opt/orchestrator-venv/bin/python -m pip install --upgrade .
-   /opt/orchestrator-venv/bin/orchestrator tui --repo /path/to/your/project
+   "$HOME/.venvs/orchestrator/bin/python" -m pip install --upgrade .
+   "$HOME/.venvs/orchestrator/bin/orchestrator" tui --repo /path/to/your/project
    ```
 
    If your virtualenv lives elsewhere, use its Python and `orchestrator` executables instead.
@@ -419,6 +423,31 @@ If Orchestrator was copied into the image during `docker build`, update the sour
 for that build, rebuild the image, and recreate the container using your existing run or Compose
 configuration. Preserve the mounts for your profile, provider credentials, repository, and state
 directory so they are available to the replacement container.
+
+### Permission denied when updating a virtualenv
+
+An installation error such as `Permission denied: '/opt/orchestrator-venv/bin/orchestrator'` means
+your user cannot update that virtualenv. The earlier `/opt` example could create a root-owned
+installation. You can use the user-owned virtualenv above and keep your existing profile and state.
+
+If `/opt/orchestrator-venv` is your dedicated Orchestrator environment and you want your container
+user to maintain it, run this one-time ownership repair **as that normal user**:
+
+```sh
+sudo chown -Rh -- "$(id -u):$(id -g)" /opt/orchestrator-venv
+chmod -R u+rwX /opt/orchestrator-venv
+```
+
+Then update from your Orchestrator checkout:
+
+```sh
+/opt/orchestrator-venv/bin/python -m pip install --upgrade .
+/opt/orchestrator-venv/bin/orchestrator tui --repo /path/to/your/project
+```
+
+Run the TUI without `sudo`. Running it as root changes CLI discovery, credential/configuration
+locations, and skill discovery, and can create root-owned Git references, logs, and worktree records
+that prevent later tasks from running as your normal user.
 
 ## Configuration and profiles
 
