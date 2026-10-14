@@ -101,18 +101,14 @@ async def doctor(config, *, live: bool = False, test_skills: bool = False) -> in
                 )
             print(f"  {role_name} MCP: {mcp} (connection not tested)")
         if provider.backend == "codex-cli":
-            status = await run_process([location, "login", "status"], Path.cwd(), timeout=20)
-            login = status.stdout + status.stderr
-            print(
-                "  "
-                + next(
-                    (line for line in login.splitlines() if "Logged in" in line),
-                    "No login confirmed; run codex login.",
-                )
-            )
-            if status.code or "ChatGPT" not in login:
+            from .adapters import BackendError, codex_login_status
+
+            try:
+                method = await codex_login_status(provider, Path.cwd())
+                print(f"  Logged in using {method}.")
+            except BackendError as exc:
                 missing = True
-                print("  A ChatGPT login is required for this adapter.")
+                print(f"  {exc}")
         elif provider.backend == "claude-cli":
             from .adapters import BackendError, claude_login_status
 

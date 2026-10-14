@@ -18,7 +18,7 @@ def test_provider_names_and_custom_models_round_trip(tmp_path):
 @pytest.mark.parametrize(
     "field,value,message",
     [
-        ("auth", "api", "only existing CLI logins"),
+        ("auth", "unsupported", "supports auth"),
         ("backend", "unsupported-cli", "not implemented"),
         ("sandbox", "false", "boolean"),
     ],
@@ -150,4 +150,24 @@ def test_claude_mcp_permissions_can_be_saved_while_disabled():
     config.validate()
     config.roles["planner"].provider = "codex"
     with pytest.raises(ConfigError, match="only to Claude"):
+        config.validate()
+
+
+def test_codex_api_auth_round_trips_without_changing_other_providers(tmp_path):
+    config = default_config()
+    config.providers["codex"].auth = "api"
+    path = tmp_path / "api.toml"
+    save_config(config, path)
+    loaded = load_config(path)
+    assert loaded.to_dict() == config.to_dict()
+    assert loaded.providers["claude"].auth == "login"
+    assert loaded.providers["antigravity"].auth == "login"
+
+
+@pytest.mark.parametrize("backend", ["agy-cli", "claude-cli"])
+def test_api_auth_is_only_supported_for_codex(backend):
+    config = default_config()
+    provider = next(p for p in config.providers.values() if p.backend == backend)
+    provider.auth = "api"
+    with pytest.raises(ConfigError, match="supports auth = 'login'"):
         config.validate()

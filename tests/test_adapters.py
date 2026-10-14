@@ -13,6 +13,7 @@ from orchestrator.adapters import (
     antigravity_command,
     claude_command,
     codex_command,
+    codex_login_status,
     login_environment,
 )
 from orchestrator.config import default_config
@@ -29,10 +30,20 @@ def request(tmp_path, role="worker", provider="antigravity"):
     return AgentRequest(role, config.roles[role], config.providers[provider], tmp_path, "Fix a bug")
 
 
-def fake_cli(tmp_path: Path, events: list[dict], code: int = 0, stderr: str = "") -> str:
+def fake_cli(
+    tmp_path: Path,
+    events: list[dict],
+    code: int = 0,
+    stderr: str = "",
+    *,
+    codex_auth: str = "ChatGPT",
+) -> str:
     path = tmp_path / "fake-cli"
     path.write_text(
         f"#!{sys.executable}\nimport json, sys\n"
+        "if sys.argv[1:] == ['login', 'status']:\n"
+        f"    print({'Logged in using ' + codex_auth!r})\n"
+        "    sys.exit(0)\n"
         "sys.stdin.read()\n"
         f"events = {events!r}\n"
         "for event in events: print(json.dumps(event), flush=True)\n"
@@ -168,6 +179,63 @@ async def test_codex_fails_on_incomplete_turn(tmp_path):
     )
     with pytest.raises(BackendError, match="Login expired"):
         await CodexBackend().run(req, ignore)
+
+
+@pytest.mark.parametrize("use_mcp", [False, True])
+async def test_codex_api_key_auth_uses_cached_cli_login(tmp_path, use_mcp, monkeypatch):
+    req = request(tmp_path, provider="codex")
+    req.provider.auth = "api"
+    req.role.use_mcp = use_mcp
+    req.provider.executable = fake_cli(
+        tmp_path,
+        [
+            {"type": "item.completed", "item": {"type": "agent_message", "text": "Fixed"}},
+            {"type": "turn.completed"},
+        ],
+        codex_auth="an API key - sk-fixture-secret",
+    )
+    monkeypatch.setenv("OPENAI_API_KEY", "unrelated-environment-key")
+    command = codex_command(req, None)
+    assert 'forced_login_method="api"' in command
+    assert 'forced_login_method="chatgpt"' not in command
+    assert ("--ignore-user-config" in command) is not use_mcp
+    assert "sk-fixture-secret" not in " ".join(command)
+    assert (await CodexBackend().run(req, ignore)).text == "Fixed"
+
+
+@pytest.mark.parametrize(
+    "auth,status",
+    [("login", "an API key - sk-fixture-secret"), ("api", "ChatGPT")],
+)
+async def test_codex_auth_mismatch_does_not_start_exec_or_echo_keys(tmp_path, auth, status):
+    req = request(tmp_path, provider="codex")
+    req.provider.auth = auth
+    marker = tmp_path / "exec-started"
+    cli = tmp_path / "codex"
+    cli.write_text(
+        f"#!{sys.executable}\nimport sys\nfrom pathlib import Path\n"
+        "if sys.argv[1:] == ['login', 'status']:\n"
+        f"    print({'Logged in using ' + status!r})\n"
+        "    sys.exit(0)\n"
+        f"Path({str(marker)!r}).touch()\n"
+    )
+    cli.chmod(0o755)
+    req.provider.executable = str(cli)
+    with pytest.raises(BackendError, match="matching Codex authentication") as error:
+        await CodexBackend().run(req, ignore)
+    assert "sk-fixture-secret" not in str(error.value)
+    assert not marker.exists()
+
+
+async def test_codex_missing_login_has_setup_instructions(tmp_path):
+    req = request(tmp_path, provider="codex")
+    req.provider.auth = "api"
+    cli = tmp_path / "codex"
+    cli.write_text(f"#!{sys.executable}\nprint('Not logged in')\nraise SystemExit(1)\n")
+    cli.chmod(0o755)
+    req.provider.executable = str(cli)
+    with pytest.raises(BackendError, match="codex login --with-api-key"):
+        await codex_login_status(req.provider, tmp_path)
 
 
 async def test_antigravity_stream_uses_terminal_response_and_retains_progress(tmp_path):

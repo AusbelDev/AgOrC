@@ -489,13 +489,18 @@ def report(run: Run) -> str:
         f"Branch: `{run.branch}`",
         f"Base: `{run.base}`",
         f"Revision rounds: {run.attempt}",
-        f"Mode: {'offline demo' if run.demo else 'CLI logins'}",
+        f"Mode: {'offline demo' if run.demo else 'Provider CLIs'}",
         "",
         "## Models",
         "",
     ]
     for name, role in roles.items():
         lines.append(f"- {name}: {role.provider} / {role.model} / {role.reasoning}")
+    lines += ["", "## Authentication", ""]
+    for name in dict.fromkeys(role.provider for role in roles.values()):
+        provider = run.config["providers"][name]
+        auth = "API key" if provider.get("auth", "login") == "api" else "CLI account login"
+        lines.append(f"- {name}: {auth}")
     if any(role.use_mcp for role in roles.values()):
         lines += ["", "## MCP configuration", ""]
         for name, role in roles.items():

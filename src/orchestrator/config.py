@@ -83,8 +83,13 @@ class Config:
                     f"Provider {name}: backend {provider.backend!r} is not implemented. "
                     f"Available: {', '.join(BACKENDS)}. Direct API adapters are planned."
                 )
-            if provider.auth != "login":
-                raise ConfigError(f"Provider {name}: only existing CLI logins are supported yet.")
+            auth_methods = ("login", "api") if provider.backend == "codex-cli" else ("login",)
+            if provider.auth not in auth_methods:
+                raise ConfigError(
+                    f"Provider {name}: {provider.backend} supports auth = "
+                    + " or ".join(repr(method) for method in auth_methods)
+                    + ". Codex API keys must be configured through the Codex CLI."
+                )
             if not isinstance(provider.executable, str):
                 raise ConfigError(f"Provider {name}: executable must be a path or command name.")
             if not isinstance(provider.sandbox, bool):

@@ -338,3 +338,50 @@ async def test_claude_cli_end_to_end_uses_structured_roles_and_real_checks(
     assert finished.checks[0]["code"] == 0
     assert (project / "module.py").read_text() == "value = 1\n"
     assert "+value = 2" in (store.directory(run.id) / "changes.diff").read_text()
+
+
+async def test_codex_api_auth_and_mcp_complete_workflow_without_recording_key(
+    store, project, tmp_path
+):
+    cli = tmp_path / "codex-fixture"
+    cli.write_text(
+        f"#!{sys.executable}\nimport json, sys\nfrom pathlib import Path\n"
+        "if sys.argv[1:] == ['login', 'status']:\n"
+        "    print('Logged in using an API key - sk-fixture-secret')\n"
+        "    sys.exit(0)\n"
+        "assert 'forced_login_method=\"api\"' in sys.argv\n"
+        "assert 'forced_login_method=\"chatgpt\"' not in sys.argv\n"
+        "assert 'Read Jira BACKEND-123' in sys.stdin.read()\n"
+        "response = 'Fixed'\n"
+        "if '--output-schema' in sys.argv:\n"
+        "    schema_path = Path(sys.argv[sys.argv.index('--output-schema') + 1])\n"
+        "    schema = json.loads(schema_path.read_text())\n"
+        "    planner = 'steps' in schema['properties']\n"
+        "    assert ('--ignore-user-config' in sys.argv) is not planner\n"
+        f"    response = json.dumps({PLAN!r} if planner else {ACCEPT!r})\n"
+        "else:\n"
+        "    Path('module.py').write_text('value = 2\\n')\n"
+        "print(json.dumps({'type': 'item.completed', 'item': "
+        "{'type': 'agent_message', 'text': response}}))\n"
+        "print(json.dumps({'type': 'turn.completed'}))\n"
+    )
+    cli.chmod(0o755)
+    config = default_config()
+    config.providers["codex"].auth = "api"
+    config.providers["codex"].executable = str(cli)
+    for role in config.roles.values():
+        role.provider = "codex"
+        role.model = "fixture-model"
+    config.roles["planner"].use_mcp = True
+    config.workflow.checks = [[sys.executable, "-c", "from module import value; assert value == 2"]]
+    engine = Engine(store)
+    run = await engine.create("Read Jira BACKEND-123 and fix value", project, config)
+    finished = await engine.execute(run.id)
+    assert finished.status == "completed", finished.error
+    assert finished.checks[0]["code"] == 0
+    assert finished.plan == PLAN
+    assert finished.review == ACCEPT
+    assert "codex: API key" in report(finished)
+    assert "sk-fixture-secret" not in json.dumps(finished.config)
+    assert "sk-fixture-secret" not in report(finished)
+    assert "sk-fixture-secret" not in json.dumps(store.events(run.id))

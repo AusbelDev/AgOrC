@@ -3,6 +3,8 @@
 # each role can use any model ID supported by its backend and account.
 [providers.codex]
 backend = "codex-cli"
+# "login" = ChatGPT; "api" = API key cached by `codex login --with-api-key`.
+# Configure the key in Codex, never in this file.
 auth = "login"
 executable = "codex"
 models = ["gpt-6.1-sol"]

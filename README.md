@@ -4,8 +4,10 @@ A local terminal app for coding tasks: a planner investigates your project, a wo
 plan, and a reviewer checks the resulting changes. Choose the provider, model, and reasoning level
 independently for each role.
 
-The app uses **existing Codex, Antigravity, and Claude Code CLI logins**. Defaults are GPT-6.1 Sol
-with high reasoning for planning/review, and Gemini 3.8 Flash with medium thinking for implementation.
+The app uses **existing Codex, Antigravity, and Claude Code CLI credentials**. Codex supports either
+ChatGPT login or a cached OpenAI API key; Antigravity and Claude use account login. Defaults are
+GPT-6.1 Sol with high reasoning for planning/review, and Gemini 3.8 Flash with medium thinking for
+implementation.
 Model IDs are editable; the backend and your account must support the selected model. The app does not silently
 substitute another configured model.
 
@@ -56,7 +58,7 @@ Antigravity; Claude Code is optional.
 
    ```sh
    uv run orchestrator doctor
-   uv run orchestrator doctor --live   # Optional: makes model requests and uses account quota.
+   uv run orchestrator doctor --live   # Optional: uses account quota or API usage.
    uv run orchestrator tui --repo /absolute/path/to/your/project
    ```
 
@@ -70,18 +72,21 @@ Antigravity; Claude Code is optional.
 
 Tested locally against Codex CLI 0.162.1 and Antigravity CLI (`agy`) 1.3.3's command surfaces.
 
-Choose ChatGPT login in Codex and complete sign-in in `agy`. Antigravity's command is `agy`,
+Choose ChatGPT login in Codex, or configure [Codex API-key authentication](#codex-api-key-authentication),
+and complete sign-in in `agy`. Antigravity's command is `agy`,
 even though this app names its backend `agy-cli`. Its sign-in is separate from the retired Gemini
 CLI's OAuth cache. Credentials remain in each CLI's normal stores; this app does not copy them into
 run records and removes API credential variables from agent subprocess environments. Antigravity
 uses its cached CLI account/keyring, without rewriting its settings or permissions. If its settings
 select `modelProvider = "gemini"` for API authentication, remove that setting to use account login.
 
-`doctor` checks the CLIs used by your current roles and Codex/Claude Code login status. Unused providers
+`doctor` checks the CLIs used by your current roles and Codex/Claude Code authentication status,
+including whether Codex's login matches your selected authentication method. Unused providers
 do not need to be installed. Antigravity has no equivalent login-status
 subcommand, so a local check does not claim that its account is authenticated. Use
 `uv run orchestrator doctor --live` to verify each distinct role configuration with a minimal model
-request. This uses account quota. Expired logins fail visibly; run `agy` to sign in and then resume.
+request. This uses account quota or API usage, depending on the provider's authentication. Expired
+logins fail visibly; run `agy` to sign in and then resume.
 
 The **Offline demo** fixes a small real bug in a generated sample project, runs its tests, and shows
 the diff without contacting a provider. You can also run it from the command line:
@@ -89,6 +94,57 @@ the diff without contacting a provider. You can also run it from the command lin
 ```sh
 uv run orchestrator demo
 ```
+
+## Codex API-key authentication
+
+Codex roles can use your existing OpenAI API-key login in the Codex CLI. Run the following as the
+same user who runs the TUI, inside the container and without `sudo`:
+
+```sh
+codex login status
+```
+
+If it already reports an API-key login, keep that login. Otherwise, configure the key using Codex's
+native command. When your container supplies the key through `OPENAI_API_KEY`, pipe it to stdin:
+
+```sh
+printenv OPENAI_API_KEY | codex login --with-api-key
+codex login status
+```
+
+`OPENAI_API_KEY` must contain your actual key before running this command. Codex stores the login in
+its credential store; do not put the key in `orchestrator.local.toml` or the task description.
+Orchestrator removes API credential environment variables from agent subprocesses and reuses the
+cached Codex login. Simply exporting a key without configuring the CLI login is not sufficient.
+API-key requests use your OpenAI Platform account rather than ChatGPT plan credits; see
+[official OpenAI authentication documentation](https://learn.chatgpt.com/docs/auth).
+
+In the TUI, scroll the left panel below **MODELS** to **AUTHENTICATION**. Change **codex · Codex
+authentication** from **ChatGPT login** to **API key**, then click **Save settings**. This setting
+applies to every role using that named provider. Custom Codex provider definitions have their own
+selector. There is no key-entry field; credentials stay with the CLI.
+
+The equivalent change in your existing provider section is:
+
+```toml
+[providers.codex]
+backend = "codex-cli"
+auth = "api"
+executable = "codex"
+models = ["gpt-6.1-sol"]
+```
+
+Keep the model IDs appropriate to your account; model availability may differ between authentication
+methods. API authentication works with the same per-role MCP settings described under
+[Jira MCP access](#jira-mcp-access). Run `uv run orchestrator doctor` to check the configured login
+before starting a new task. The adapter checks the authentication method before running a model
+command and reports a mismatch instead of starting a command with a conflicting login restriction.
+
+Existing runs keep the authentication saved with them. After changing the default from ChatGPT to
+API key, start a **new** task instead of resuming a run saved with ChatGPT authentication. To return
+to ChatGPT, sign in with `codex login` (or `codex login --device-auth` in a headless container), select
+**ChatGPT login**, and save. Orchestrator does not automatically switch the CLI's stored identity.
+Claude and Antigravity continue to require their existing account logins.
 
 ## Your first Jira task in the TUI
 
@@ -139,6 +195,8 @@ Try **Offline demo** first if you want to practice without provider credentials 
    result. Keep the defaults if those CLIs are installed and logged in, or select the same
    available provider for all three roles. Check the model field after changing a provider.
    In Docker, provider commands and logins must be available to the container user.
+   For a Codex API-key login, scroll further to **AUTHENTICATION** and select **API key** for that
+   named provider. See [Codex API-key authentication](#codex-api-key-authentication) for setup.
    To let a Codex or Claude planner fetch a ticket, enable **Use configured MCP servers** under
    **Planner**. For Claude, also allow the required Jira tools as described below.
 
@@ -604,7 +662,7 @@ context size; the reviewer can inspect files directly in the worktree.
 
 - `config.py`: named providers, roles, validation, TOML profiles.
 - `skills.py`: harness discovery, per-role catalogs, pinned packages, and prompt loading.
-- `adapters.py`: backend protocol and registry, Codex/Antigravity/Claude login implementations,
+- `adapters.py`: backend protocol and registry, Codex/Antigravity/Claude authentication implementations,
   offline fixture.
 - `processes.py`: async streaming, output limits, timeouts, process-group cancellation.
 - `git.py`: worktrees, diffs including untracked files, workspace fingerprints.
@@ -615,7 +673,7 @@ context size; the reviewer can inspect files directly in the worktree.
 Future direct API adapters implement `AgentBackend.run(AgentRequest, emit)` and
 return an `AgentResult`. Add their configuration/capability validation and register the backend; the
 workflow remains independent of provider SDKs. API adapters will also need their own scoped execution
-tool loop. Direct API auth, automatic Jira import, native model discovery, and concurrent
+tool loop. Direct API adapters, automatic Jira import, native model discovery, and concurrent
 workers are **not implemented** in this version.
 
 Integration references:

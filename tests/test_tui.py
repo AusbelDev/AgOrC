@@ -191,3 +191,31 @@ async def test_tui_mcp_controls_save_per_role_and_follow_provider(store, tmp_pat
         await pilot.pause()
         assert toggle.disabled
         assert not app.form_config().roles["worker"].use_mcp
+
+
+async def test_tui_codex_api_auth_is_shared_by_provider_and_persists(store, tmp_path):
+    profile = tmp_path / "api.toml"
+    config = default_config()
+    config.providers["custom codex.with spaces"] = config.providers["codex"]
+    config.roles["worker"].provider = "custom codex.with spaces"
+    app = OrchestratorApp(config, profile, store, tmp_path)
+    async with app.run_test(size=(80, 24)) as pilot:
+        field = app.provider_auth_fields["codex"]
+        app.query_one(f"#{field}", Select).value = "api"
+        app.query_one("#planner-mcp", Checkbox).value = True
+        await pilot.pause()
+        app.query_one("#save", Button).scroll_visible(animate=False, immediate=True)
+        await pilot.pause()
+        await pilot.click("#save")
+        await pilot.pause()
+        saved = load_config(profile)
+        assert saved.providers["codex"].auth == "api"
+        assert saved.providers[saved.roles["planner"].provider].auth == "api"
+        assert saved.providers[saved.roles["reviewer"].provider].auth == "api"
+        assert saved.providers["custom codex.with spaces"].auth == "login"
+        assert saved.providers["claude"].auth == "login"
+        assert saved.roles["planner"].use_mcp
+    reopened = OrchestratorApp(saved, profile, store, tmp_path)
+    async with reopened.run_test(size=(80, 24)):
+        field = reopened.provider_auth_fields["codex"]
+        assert reopened.query_one(f"#{field}", Select).value == "api"

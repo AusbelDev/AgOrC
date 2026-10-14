@@ -167,3 +167,28 @@ async def test_live_doctor_checks_distinct_mcp_settings(tmp_path, monkeypatch, c
     output = capsys.readouterr().out
     assert "planner MCP: enabled" in output
     assert "connection not tested" in output
+
+
+async def test_doctor_accepts_api_auth_and_does_not_print_key(tmp_path, capsys):
+    cli = tmp_path / "codex"
+    cli.write_text(
+        f"#!{sys.executable}\nimport sys\n"
+        "if sys.argv[1:] == ['--version']: print('fixture 1.0')\n"
+        "else: print('Logged in using an API key - sk-fixture-secret')\n"
+    )
+    cli.chmod(0o755)
+    config = default_config()
+    config.providers["codex"].auth = "api"
+    config.providers["codex"].executable = str(cli)
+    for role in config.roles.values():
+        role.provider = "codex"
+        role.model = "fixture-model"
+    assert await doctor(config) == 0
+    output = capsys.readouterr().out
+    assert "Logged in using API key" in output
+    assert "sk-fixture-secret" not in output
+    config.providers["codex"].auth = "login"
+    assert await doctor(config) == 1
+    output = capsys.readouterr().out
+    assert "Current CLI login: API key" in output
+    assert "sk-fixture-secret" not in output

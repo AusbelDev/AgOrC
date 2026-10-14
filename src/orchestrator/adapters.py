@@ -78,7 +78,40 @@ def executable(provider: Provider) -> str:
     return resolved
 
 
+async def codex_login_status(provider: Provider, workspace: Path) -> str:
+    """Check cached CLI authentication without enforcing a method that could log the user out."""
+    status = await run_process(
+        [executable(provider), "login", "status"],
+        workspace,
+        env=login_environment(),
+        timeout=20,
+    )
+    login = (status.stdout + status.stderr).lower()
+    expected = "API key" if provider.auth == "api" else "ChatGPT"
+    actual = ""
+    if status.code == 0 and "logged in" in login:
+        if "api key" in login:
+            actual = "API key"
+        elif "chatgpt" in login:
+            actual = "ChatGPT"
+    if actual != expected:
+        detail = f"Current CLI login: {actual}. " if actual else "No matching CLI login confirmed. "
+        setup = (
+            "Sign in using `codex login --with-api-key` (key supplied on stdin)."
+            if provider.auth == "api"
+            else "Sign in using `codex login` or `codex login --device-auth`."
+        )
+        raise BackendError(
+            f"Codex is configured for {expected} authentication. {detail}{setup} "
+            "Choose the matching Codex authentication setting in the TUI or provider profile. "
+            "Model execution was not started."
+        )
+    # Never return login status text: an API-key status line may include part of the key.
+    return actual
+
+
 def codex_command(request: AgentRequest, schema_path: Path | None) -> list[str]:
+    auth_method = "api" if request.provider.auth == "api" else "chatgpt"
     argv = [
         executable(request.provider),
         "exec",
@@ -93,7 +126,7 @@ def codex_command(request: AgentRequest, schema_path: Path | None) -> list[str]:
         "-c",
         'approval_policy="never"',
         "-c",
-        'forced_login_method="chatgpt"',
+        f'forced_login_method="{auth_method}"',
         "-c",
         'model_provider="openai"',
     ]
@@ -108,6 +141,7 @@ def codex_command(request: AgentRequest, schema_path: Path | None) -> list[str]:
 
 class CodexBackend:
     async def run(self, request: AgentRequest, emit: EventSink) -> AgentResult:
+        await codex_login_status(request.provider, request.workspace)
         result = AgentResult("")
         errors: list[str] = []
         completed = False

@@ -106,6 +106,11 @@ class OrchestratorApp(App):
         self.model_choices = {
             name: {role.provider: role.model} for name, role in config.roles.items()
         }
+        self.provider_auth_fields = {
+            name: f"provider-auth-{index}"
+            for index, (name, provider) in enumerate(config.providers.items())
+            if provider.backend == "codex-cli"
+        }
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -170,6 +175,21 @@ class OrchestratorApp(App):
                     "These settings apply to new runs.",
                     id="profile-note",
                 )
+                if self.provider_auth_fields:
+                    yield Label("AUTHENTICATION", classes="section")
+                    for name, field_id in self.provider_auth_fields.items():
+                        yield Label(f"{name} · Codex authentication")
+                        yield Select(
+                            [("ChatGPT login", "login"), ("API key", "api")],
+                            value=self.config.providers[name].auth,
+                            allow_blank=False,
+                            id=field_id,
+                        )
+                    yield Static(
+                        "Applies to every role using this provider. "
+                        "Set up credentials with codex login; keys stay in its credential store.",
+                        markup=False,
+                    )
                 yield Label("VERIFICATION", classes="section")
                 yield Label("Check commands (JSON argv arrays)")
                 yield TextArea(json.dumps(self.config.workflow.checks, indent=2), id="checks")
@@ -313,6 +333,8 @@ class OrchestratorApp(App):
 
     def form_config(self) -> Config:
         copied = Config.from_dict(self.config.to_dict())
+        for name, field_id in self.provider_auth_fields.items():
+            copied.providers[name].auth = str(self.query_one(f"#{field_id}", Select).value)
         for name in ROLES:
             selected_provider = str(self.query_one(f"#{name}-provider", Select).value)
             backend = copied.providers[selected_provider].backend
