@@ -104,7 +104,10 @@ def parse_response(text: str, role: str) -> dict[str, Any]:
         if data["accepted"] and any(f["severity"] == "blocking" for f in data["findings"]):
             raise BackendError("The reviewer accepted changes while reporting a blocking finding.")
         if not data["accepted"] and not data["findings"]:
-            raise BackendError("The reviewer rejected changes without actionable findings.")
+            raise BackendError(
+                "The reviewer rejected changes without actionable findings. "
+                f"Reviewer summary: {data['summary']}"
+            )
     return data
 
 

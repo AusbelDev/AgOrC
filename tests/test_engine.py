@@ -214,6 +214,28 @@ async def test_reviewer_changes_fail_instead_of_being_accepted(store, project):
     assert "reviewer modified" in finished.error
 
 
+async def test_incomplete_review_preserves_cause_and_can_resume_without_reimplementation(
+    store, project
+):
+    summary = "Review incomplete: bwrap namespace permission denied; repository reads failed."
+    backend = ScriptedBackend([{"accepted": False, "summary": summary, "findings": []}])
+    engine = engine_for(store, backend)
+    config = default_config()
+    config.workflow.checks = [[sys.executable, "-c", "from module import value; assert value == 2"]]
+    run = await engine.create("Fix value", project, config)
+    failed = await engine.execute(run.id)
+    assert failed.status == "failed"
+    assert failed.stage == "reviewer"
+    assert failed.attempt == 0
+    assert summary in failed.error
+    assert summary in (store.directory(run.id) / "report.md").read_text()
+    assert backend.calls == ["planner", "worker", "reviewer"]
+    backend.reviews = [ACCEPT]
+    resumed = await engine.execute(run.id)
+    assert resumed.status == "completed"
+    assert backend.calls == ["planner", "worker", "reviewer", "reviewer"]
+
+
 async def test_instructions_added_during_worker_require_another_pass(store, project):
     backend = ScriptedBackend()
     engine = engine_for(store, backend)

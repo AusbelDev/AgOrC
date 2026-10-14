@@ -449,6 +449,38 @@ Run the TUI without `sudo`. Running it as root changes CLI discovery, credential
 locations, and skill discovery, and can create root-owned Git references, logs, and worktree records
 that prevent later tasks from running as your normal user.
 
+### Codex repository reads fail with a bwrap namespace error
+
+If the agent reports `bwrap` namespace-permission errors for every repository read, its inner
+Linux sandbox could not start. Docker or host restrictions can block the namespace/seccomp
+operations required by Codex. This needs a container or host configuration fix; changing Git
+ownership does not resolve a namespace failure. See
+[Codex container sandbox requirements](https://learn.chatgpt.com/docs/agent-approvals-security#os-level-sandbox)
+and [Docker seccomp documentation](https://docs.docker.com/engine/security/seccomp/).
+
+Inside the container, as your normal user, reproduce the sandbox startup without a model request:
+
+```sh
+codex sandbox linux -- /bin/true
+```
+
+Record the exact error and the container's Docker run command or Compose service. The appropriate
+fix depends on whether the restriction comes from seccomp, AppArmor, user-namespace settings, or
+the host kernel. Orchestrator explicitly requests Codex's read-only sandbox for planner/reviewer
+and workspace-write for worker, so a different sandbox setting in your CLI's user config does
+not override those choices.
+
+An incomplete review remains failed and preserves the reviewer's explanation in the error and
+report. After fixing repository access, select that run in **History** and click **Resume** to
+retry its pending review. Existing implementation and verification results are retained unless
+the workspace changed.
+
+If the reviewer also reports that Jira MCP is unavailable, remember that MCP is configured per
+role. A reviewer can use requirements already captured in the saved plan. If it must fetch Jira
+independently, enable **Use configured MCP servers** for the reviewer and grant the necessary tools
+for its provider before starting a new task. Changing defaults does not update an existing run's
+saved MCP settings.
+
 ## Configuration and profiles
 
 `orchestrator init` creates `orchestrator.local.toml`. See
