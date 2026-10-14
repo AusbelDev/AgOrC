@@ -86,6 +86,20 @@ async def doctor(config, *, live: bool = False, test_skills: bool = False) -> in
         print(f"{name}: {result.stdout or result.stderr}")
         if result.code:
             missing = True
+        for role_name, role in config.roles.items():
+            if role.provider != name:
+                continue
+            if provider.backend == "agy-cli":
+                mcp = "existing Antigravity MCP configuration and grants"
+            elif role.use_mcp:
+                mcp = "enabled using existing CLI configuration and permissions"
+                if provider.backend == "claude-cli" and role.mcp_tools:
+                    mcp += "; additional allowed tools: " + ", ".join(role.mcp_tools)
+            else:
+                mcp = (
+                    "user configuration ignored" if provider.backend == "codex-cli" else "disabled"
+                )
+            print(f"  {role_name} MCP: {mcp} (connection not tested)")
         if provider.backend == "codex-cli":
             status = await run_process([location, "login", "status"], Path.cwd(), timeout=20)
             login = status.stdout + status.stderr
@@ -173,7 +187,9 @@ async def doctor(config, *, live: bool = False, test_skills: bool = False) -> in
                     "required": ["token"],
                 }
             for role in config.roles.values():
-                identity = (role.provider, role.model, role.reasoning)
+                identity = (
+                    role.provider, role.model, role.reasoning, role.use_mcp, tuple(role.mcp_tools)
+                )
                 if identity in checked:
                     continue
                 checked.add(identity)

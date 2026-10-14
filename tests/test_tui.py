@@ -1,6 +1,15 @@
 import asyncio
 
-from textual.widgets import Button, DataTable, Input, RichLog, Select, TabbedContent, TextArea
+from textual.widgets import (
+    Button,
+    Checkbox,
+    DataTable,
+    Input,
+    RichLog,
+    Select,
+    TabbedContent,
+    TextArea,
+)
 
 from orchestrator.config import default_config, load_config
 from orchestrator.tui import OrchestratorApp
@@ -143,3 +152,42 @@ async def test_tui_failed_save_preserves_active_settings(store, tmp_path, monkey
         await pilot.click("#save")
         await pilot.pause()
         assert app.config.roles["worker"].model == "gemini-3.8-flash-medium"
+
+
+async def test_tui_mcp_controls_save_per_role_and_follow_provider(store, tmp_path):
+    profile = tmp_path / "mcp.toml"
+    app = OrchestratorApp(default_config(), profile, store, tmp_path)
+    async with app.run_test(size=(150, 55)) as pilot:
+        assert app.query_one("#worker-mcp", Checkbox).disabled
+        app.query_one("#planner-mcp", Checkbox).value = True
+        app.query_one("#worker-provider", Select).value = "claude"
+        await pilot.pause()
+        toggle = app.query_one("#worker-mcp", Checkbox)
+        tools = app.query_one("#worker-mcp-tools", Input)
+        assert not toggle.disabled
+        assert tools.disabled
+        toggle.value = True
+        await pilot.pause()
+        assert not tools.disabled
+        tools.value = "mcp__jira__get_issue, mcp__jira__search"
+        app.query_one("#save", Button).scroll_visible(animate=False, immediate=True)
+        await pilot.pause()
+        await pilot.click("#save")
+        await pilot.pause()
+        saved = load_config(profile)
+        assert saved.roles["planner"].use_mcp
+        assert saved.roles["worker"].use_mcp
+        assert saved.roles["worker"].mcp_tools == ["mcp__jira__get_issue", "mcp__jira__search"]
+        assert not saved.roles["reviewer"].use_mcp
+        toggle.value = False
+        await pilot.pause()
+        assert tools.disabled
+        assert app.form_config().roles["worker"].mcp_tools == saved.roles["worker"].mcp_tools
+        app.query_one("#worker-provider", Select).value = "codex"
+        await pilot.pause()
+        assert tools.disabled
+        assert app.form_config().roles["worker"].mcp_tools == []
+        app.query_one("#worker-provider", Select).value = "antigravity"
+        await pilot.pause()
+        assert toggle.disabled
+        assert not app.form_config().roles["worker"].use_mcp

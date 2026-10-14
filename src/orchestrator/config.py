@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import warnings
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field
@@ -42,6 +43,8 @@ class Role:
     instructions: str = ""
     skills: list[str] = field(default_factory=lambda: ["*"])
     required_skills: list[str] = field(default_factory=list)
+    use_mcp: bool = False
+    mcp_tools: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -106,6 +109,22 @@ class Config:
                 raise ConfigError(f"Role {name}: {backend} does not support {role.reasoning!r}.")
             if not isinstance(role.instructions, str):
                 raise ConfigError(f"Role {name}: instructions must be text.")
+            if not isinstance(role.use_mcp, bool):
+                raise ConfigError(f"Role {name}: use_mcp must be a boolean.")
+            if not isinstance(role.mcp_tools, list) or not all(
+                isinstance(tool, str)
+                and re.fullmatch(r"mcp__[\w-]+__[\w.*-]+", tool)
+                for tool in role.mcp_tools
+            ):
+                raise ConfigError(
+                    f"Role {name}: mcp_tools must be an array of MCP tool names or patterns, "
+                    "for example mcp__jira__get_issue or mcp__jira__*."
+                )
+            if role.mcp_tools and backend != "claude-cli":
+                raise ConfigError(
+                    f"Role {name}: mcp_tools applies only to Claude Code. "
+                    "Configure MCP tool permissions in your selected CLI instead."
+                )
             for setting in ("skills", "required_skills"):
                 values = getattr(role, setting)
                 if not isinstance(values, list) or not all(

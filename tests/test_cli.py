@@ -137,3 +137,33 @@ async def test_doctor_claude_login(tmp_path, capsys):
         role.model = "sonnet"
     assert await doctor(config) == 0
     assert "Logged in using claude.ai" in capsys.readouterr().out
+
+
+async def test_live_doctor_checks_distinct_mcp_settings(tmp_path, monkeypatch, capsys):
+    executable = tmp_path / "fixture-codex"
+    executable.write_text(
+        f"#!{sys.executable}\nimport sys\n"
+        "if sys.argv[1:] == ['--version']: print('fixture 1.0')\n"
+        "else: print('Logged in using ChatGPT')\n"
+    )
+    executable.chmod(0o755)
+    config = default_config()
+    config.providers["codex"].executable = str(executable)
+    for role in config.roles.values():
+        role.provider = "codex"
+        role.model = "fixture-model"
+        role.reasoning = "default"
+    config.roles["planner"].use_mcp = True
+    seen = []
+
+    class Probe:
+        async def run(self, request, emit):
+            seen.append(request.role.use_mcp)
+            return AgentResult('{"ok":true}')
+
+    monkeypatch.setattr(BackendRegistry, "get", lambda self, provider: Probe())
+    assert await doctor(config, live=True) == 0
+    assert seen == [True, False]
+    output = capsys.readouterr().out
+    assert "planner MCP: enabled" in output
+    assert "connection not tested" in output

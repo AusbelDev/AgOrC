@@ -81,6 +81,40 @@ async def test_revision_loop_and_untracked_diff(store, project):
     assert "+value = 2" in changes
 
 
+async def test_mcp_planner_settings_and_requirements_reach_downstream_roles(store, project):
+    ticket_plan = {
+        "summary": "Jira BACKEND-123 requires value = 2",
+        "steps": ["Set value to 2 and preserve the public API"],
+        "acceptance_criteria": ["Value is 2", "Public API unchanged"],
+    }
+    requests = []
+
+    class JiraPlanner(ScriptedBackend):
+        async def run(self, request, emit):
+            requests.append(request)
+            assert "Read Jira BACKEND-123" in request.prompt
+            if request.role_name == "planner":
+                assert request.role.use_mcp
+                return AgentResult(json.dumps(ticket_plan))
+            assert not request.role.use_mcp
+            assert ticket_plan["summary"] in request.prompt
+            assert "Public API unchanged" in request.prompt
+            return await super().run(request, emit)
+
+    engine = engine_for(store, JiraPlanner())
+    config = default_config()
+    config.roles["planner"].use_mcp = True
+    run = await engine.create(
+        "Read Jira BACKEND-123 and implement its requirements", project, config
+    )
+    config.roles["planner"].use_mcp = False
+    finished = await engine.execute(run.id)
+    assert finished.status == "completed"
+    assert [req.role_name for req in requests] == ["planner", "worker", "reviewer"]
+    assert store.get(run.id).config["roles"]["planner"]["use_mcp"]
+    assert "planner: existing CLI MCP configuration enabled" in report(finished)
+
+
 async def test_failed_checks_cannot_be_overruled_by_reviewer(store, project):
     engine = engine_for(store, ScriptedBackend())
     config = default_config()

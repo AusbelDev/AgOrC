@@ -90,6 +90,213 @@ the diff without contacting a provider. You can also run it from the command lin
 uv run orchestrator demo
 ```
 
+## Your first Jira task in the TUI
+
+The left panel is where you set up a task. The right panel shows progress and results. You can
+click fields and buttons, and scroll the left panel to reach settings below the task description.
+Try **Offline demo** first if you want to practice without provider credentials or model quota.
+
+1. **Open the project you want to change.** Run from your Orchestrator checkout:
+
+   ```sh
+   uv run orchestrator tui --repo /workspace/backend
+   ```
+
+   Replace `/workspace/backend` with your project's absolute path. In Docker, use a path inside
+   the container and an interactive terminal (`docker run -it`). The project must be a Git
+   repository with at least one commit. In the **Repository** field, confirm that this is the
+   project affected by your Jira ticket.
+
+2. **Describe the Jira work.** Open the ticket and copy its title, description, acceptance
+   criteria, and useful comments into **What should be changed?** Include relevant attachment
+   details as text. For example:
+
+   ```text
+   Implement Jira ticket BACKEND-123: Handle empty order exports.
+
+   Problem:
+   Exporting orders crashes when the selected date range has no orders.
+
+   Expected behavior:
+   Return a valid CSV containing the column headers and no data rows.
+
+   Acceptance criteria:
+   - An empty date range does not cause an error.
+   - The CSV still contains its headers.
+   - Exporting existing orders continues to work.
+   - Add a regression test for an empty export.
+
+   Additional instructions:
+   Follow the existing project conventions.
+   Keep the public API unchanged.
+   ```
+
+   Automatic Jira import is not built in. An issue key or link alone is sufficient only when the
+   selected agent actually has a working Jira tool; see [Jira MCP access](#jira-mcp-access).
+
+3. **Choose your agents under MODELS.** Scroll down the left panel. The **Planner** investigates
+   the project and proposes steps, the **Worker** changes code, and the **Reviewer** checks the
+   result. Keep the defaults if those CLIs are installed and logged in, or select the same
+   available provider for all three roles. Check the model field after changing a provider.
+   In Docker, provider commands and logins must be available to the container user.
+   To let a Codex or Claude planner fetch a ticket, enable **Use configured MCP servers** under
+   **Planner**. For Claude, also allow the required Jira tools as described below.
+
+4. **Choose skills if your task needs them.** Open **Skills**, enable the appropriate discovery
+   options, and click **Refresh skill catalog**. Use `*` in a role's available-skills field to
+   offer every discovered skill. To apply a workflow on every worker invocation, enter its
+   frontmatter name, such as `atrium-interfaces`, under **Worker: required skills**. Discovery
+   follows each role's provider; **Extra skill folders** can share a package across providers.
+   Enter extra folders as a JSON array, such as `["/workspace/team-skills"]`. Skills describe
+   workflows; adding a skill does not connect its MCP servers.
+
+5. **Set your test commands under VERIFICATION.** Scroll further down the left panel. Enter
+   commands for the project being changed, using JSON arrays with one entry per command word.
+   For the terminal command `python3.9 -m pytest`, enter:
+
+   ```json
+   [["python3.9", "-m", "pytest"]]
+   ```
+
+   To run tests and lint:
+
+   ```json
+   [
+     ["python3.9", "-m", "pytest"],
+     ["ruff", "check", "."]
+   ]
+   ```
+
+   These commands run in the generated task worktree. Make the required tools and dependencies
+   available there; the original checkout's virtualenv is not copied. Leave **Maximum revision
+   rounds** at `2` initially: this allows two revisions after the first implementation.
+   Click **Save settings** to reuse the configuration. This saves provider, skill, and verification
+   settings; it does not save the task description or repository selection as defaults.
+
+6. **Click Start task.** Scroll back to the top of the left panel. The workflow runs automatically:
+   **Plan → Implement → Verify → Review**.
+
+   | Tab | What it shows |
+   | --- | --- |
+   | **Activity** | Progress, agent messages, check output, and errors. |
+   | **Plan** | Proposed steps and acceptance criteria. |
+   | **Review** | The run report, verification results, and review findings. |
+   | **Diff** | Saved code changes when the run produces its diff. |
+   | **History** | Previous runs you can reopen. |
+
+7. **Add instructions or pause when needed.** Use **Additional instructions for the next stage**
+   at the bottom of the right panel, then click **Send**. For example:
+
+   ```text
+   Also cover a date range containing only cancelled orders.
+   ```
+
+   **Pause** (`Ctrl+P`) finishes the current stage and pauses before the next one. **Stop**
+   (`Ctrl+X`) interrupts active execution and keeps partial work. **Resume** (`Ctrl+R`) continues
+   an unfinished run, retrying its pending stage. These controls also work with buttons.
+   **Quit** (`Ctrl+Q`) stops active execution and exits. Settings changed in the left panel apply
+   to new tasks; resumed runs keep their saved configuration and skill snapshots.
+
+8. **Inspect the result before finishing the ticket.** The **RUN OVERVIEW** displays a worktree
+   path: a separate working copy containing the changes. Open that path in your editor and inspect
+   **Diff** and **Review**. Your original checkout's uncommitted changes are not copied into it.
+
+   | Status | What to do |
+   | --- | --- |
+   | **Completed** | Review accepted; inspect the changes and verification results. |
+   | **Needs attention** | The revision limit was reached; inspect the remaining findings. |
+   | **Failed** | Read the error in Activity, resolve its cause, and resume. |
+   | **Paused** | Inspect progress or add instructions, then resume when ready. |
+
+   Orchestrator retains the changes for inspection. Commit, merge, push, and update Jira yourself
+   after checking the result. A completed run cannot be resumed; start a new task for further work.
+
+## Jira MCP access
+
+You can use the MCP connections already configured in your provider CLI. Configure and authenticate
+the Jira server **inside the container, as the same user who runs Orchestrator**. Orchestrator uses
+the CLI's configuration and credential stores; it does not copy connection secrets into its TOML
+profile. A connection in a separate app or under a different user is not automatically shared.
+
+For a Jira task, the simplest setup is to enable MCP for the **Planner**. It fetches requirements
+and includes them in the plan; the worker and reviewer receive that plan and can work without their
+own Jira connection.
+
+1. Under **MODELS → Planner**, select Codex or Claude and enable **Use configured MCP servers**.
+2. **For Claude**, enter the actual Jira MCP tools under **Claude MCP tools to allow
+   (comma-separated)** if they are not already approved in your CLI settings. For example:
+
+   ```text
+   mcp__atlassian-jira-dc__*
+   ```
+
+   This example uses your server name `atlassian-jira-dc`; replace it if your CLI uses another name.
+   The `*` approves every tool on that server, including any write tools it offers.
+   Use individual read/search tool names when you want to approve only those operations. Existing
+   CLI permission grants still apply, and existing deny rules are not overridden. Leaving this
+   field empty reuses your existing grants without adding new approvals.
+3. Click **Save settings**, then start a **new** task. Resuming an old run keeps its saved settings.
+4. Put the following in **What should be changed?**, replacing the ticket key:
+
+```text
+Implement Jira ticket BACKEND-123.
+Before planning, use the Jira MCP to fetch its title, description, acceptance
+criteria, relevant comments, and linked requirements.
+Include the fetched requirements and acceptance criteria in the plan so the worker
+and reviewer can use them. If Jira is unavailable, report the failure instead of
+guessing the requirements. Follow the existing project conventions and add tests.
+Read Jira only; do not post comments, edit fields, or transition the ticket.
+```
+
+Watch **Activity** for MCP tool calls, authentication errors, or permission denials. Check **Plan**
+to confirm the fetched acceptance criteria are present before relying on them. If access fails,
+fix the CLI connection or permissions in the container, then resume the run. You can also fetch the
+ticket in your connected interactive CLI and paste its details into the task field.
+
+| Provider | Behavior |
+| --- | --- |
+| **Codex** | With MCP enabled, loads its existing user configuration, including MCP servers and their native tool permissions. The adapter still explicitly selects the model, login method, approval policy, and role sandbox. Other user settings also load. With MCP off, user configuration is ignored as before. |
+| **Claude Code** | With MCP enabled, exposes configured MCP tools and adds the listed tool permissions. Its built-in role tool sets and `dontAsk` permission mode remain in effect: tools that require an unanswered prompt are denied. With MCP off, all MCP tools are explicitly disabled. |
+| **Antigravity** | Uses its existing MCP configuration and grants as before. The TUI shows this as a disabled informational control because this adapter has no per-invocation MCP switch. |
+
+Server commands, credentials, and permission grants must work without interactive prompts in the
+generated worktree. User-scoped CLI connections are useful here: a Claude local-scope connection
+tied only to the original checkout may not be available in a new worktree. Ensure its configuration
+also applies there. For server setup and permission details, see the
+[official OpenAI MCP documentation](https://learn.chatgpt.com/docs/extend/mcp?surface=cli) and
+[Claude MCP permissions](https://code.claude.com/docs/en/permissions#tool-specific-permission-rules).
+
+The equivalent profile settings belong in the existing role section, for example:
+
+```toml
+[roles.planner]
+provider = "claude"
+model = "sonnet"
+reasoning = "high"
+use_mcp = true
+mcp_tools = ["mcp__atlassian-jira-dc__*"]
+```
+
+For Codex, use `use_mcp = true` and leave `mcp_tools = []`; configure tool grants in Codex itself.
+New and older profiles default to MCP off for Codex/Claude until you enable it. Skills and task
+instructions describe what an agent should do; the MCP controls and native CLI grants determine
+which tools it can use. Orchestrator continues to instruct agents not to modify issue trackers.
+
+For an active unfinished run, use the instruction field and **Send** to add context for the next
+stage. For reusable planner instructions, edit `instructions` in the existing `[roles.planner]`
+section of your TOML profile, then restart the TUI. For example:
+
+```toml
+instructions = """
+When a task references Jira, use the available Jira MCP to read its requirements.
+Include the requirements and acceptance criteria in the plan for downstream roles.
+If Jira access fails, report that clearly. Do not modify Jira.
+"""
+```
+
+This instruction requires MCP to be enabled and the Jira connection to be working. Entering an
+instruction alone does not connect a server or grant its tools permission.
+
 ## Python 3.9 containers
 
 Python 3.9 is supported. Inside your existing container, install from the Orchestrator checkout
@@ -296,10 +503,11 @@ The app creates changes for inspection. It does not commit those changes, merge,
 or write to Jira. The generated worktrees and artifacts are retained. Inspect/copy changes using Git
 or your editor; clean up a worktree yourself when you no longer need it.
 
-**Execution policy:** Codex uses its read-only sandbox for planner/reviewer and workspace-write
-sandbox for worker, with interactive escalation disabled. This version runs it without the user's
-global Codex configuration to enforce the selected model/auth/sandbox; repository instructions still
-apply. Antigravity uses its native `--mode plan` for planner/reviewer and `--mode accept-edits`
+**Execution policy:** Codex selects its read-only sandbox for planner/reviewer and workspace-write
+sandbox for worker, with interactive escalation disabled. By default it runs without the user's
+global Codex configuration. Enabling a role's MCP setting loads that configuration while retaining
+explicit model/auth/sandbox flags; repository instructions still apply. Antigravity uses its native
+`--mode plan` for planner/reviewer and `--mode accept-edits`
 for worker, and preserves your existing permission rules. Plan mode requests analysis before edits;
 it is not an OS read-only sandbox. The engine detects tracked/untracked source changes made by the
 planner/reviewer and fails the stage for inspection. Existing Antigravity command, MCP, and web
@@ -314,7 +522,8 @@ tools approved for unattended use and edit approvals scoped to the worktree. She
 approval in your existing Claude permission rules, or the native Bash sandbox when `sandbox = true`.
 That option enables sandboxed shell execution and disallows unsandboxed escape. It requires Claude's
 platform sandbox dependencies.
-MCP tools are disabled for these Claude sessions. Native skills and project instructions still load;
+MCP tools are disabled for Claude roles unless `use_mcp = true`; enabled roles reuse existing grants
+and any additional `mcp_tools` rules. Native skills and project instructions still load;
 skill scripts that need shell execution remain subject to the role's tool permissions. Verification
 commands run separately through the orchestrator. No permission bypass flags are used.
 

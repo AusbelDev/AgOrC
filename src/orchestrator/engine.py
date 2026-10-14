@@ -496,6 +496,14 @@ def report(run: Run) -> str:
     ]
     for name, role in roles.items():
         lines.append(f"- {name}: {role.provider} / {role.model} / {role.reasoning}")
+    if any(role.use_mcp for role in roles.values()):
+        lines += ["", "## MCP configuration", ""]
+        for name, role in roles.items():
+            if role.use_mcp:
+                lines.append(f"- {name}: existing CLI MCP configuration enabled")
+                if role.mcp_tools:
+                    lines.append(f"  Additional Claude tool grants: {', '.join(role.mcp_tools)}")
+        lines.append("Connection availability and actual tool use depend on the provider CLI.")
     if any(run.skills.values()):
         lines += ["", "## Available skill snapshots", ""]
         for name, catalog in run.skills.items():

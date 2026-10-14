@@ -145,6 +145,26 @@ class OrchestratorApp(App):
                         allow_blank=False,
                         id=f"{name}-reasoning",
                     )
+                    if provider.backend in ("codex-cli", "claude-cli"):
+                        mcp_label = "Use configured MCP servers"
+                    else:
+                        mcp_label = "MCP uses existing Antigravity grants"
+                    yield Checkbox(
+                        mcp_label,
+                        value=role.use_mcp,
+                        disabled=provider.backend == "agy-cli",
+                        id=f"{name}-mcp",
+                    )
+                    yield Label(
+                        "Claude MCP tools to allow (comma-separated)",
+                        id=f"{name}-mcp-tools-label",
+                    )
+                    yield Input(
+                        ", ".join(role.mcp_tools),
+                        placeholder="mcp__jira__get_issue",
+                        disabled=provider.backend != "claude-cli" or not role.use_mcp,
+                        id=f"{name}-mcp-tools",
+                    )
                 yield Static(
                     "Provider definitions and role instructions live in your config file. "
                     "These settings apply to new runs.",
@@ -270,15 +290,51 @@ class OrchestratorApp(App):
                     str(event.value), provider.models[0] if provider.models else ""
                 )
                 self.selected_providers[name] = str(event.value)
+            self.update_mcp_controls(name)
+
+    @on(Checkbox.Changed)
+    def mcp_changed(self, event: Checkbox.Changed) -> None:
+        for name in ROLES:
+            if event.checkbox.id == f"{name}-mcp":
+                self.update_mcp_controls(name)
+
+    def update_mcp_controls(self, name: str) -> None:
+        provider = self.config.providers[str(self.query_one(f"#{name}-provider", Select).value)]
+        toggle = self.query_one(f"#{name}-mcp", Checkbox)
+        toggle.disabled = provider.backend == "agy-cli"
+        toggle.label = (
+            "MCP uses existing Antigravity grants"
+            if toggle.disabled
+            else "Use configured MCP servers"
+        )
+        self.query_one(f"#{name}-mcp-tools", Input).disabled = (
+            provider.backend != "claude-cli" or not toggle.value
+        )
 
     def form_config(self) -> Config:
         copied = Config.from_dict(self.config.to_dict())
         for name in ROLES:
+            selected_provider = str(self.query_one(f"#{name}-provider", Select).value)
+            backend = copied.providers[selected_provider].backend
             copied.roles[name] = Role(
-                provider=str(self.query_one(f"#{name}-provider", Select).value),
+                provider=selected_provider,
                 model=self.query_one(f"#{name}-model", Input).value.strip(),
                 reasoning=str(self.query_one(f"#{name}-reasoning", Select).value),
                 instructions=self.config.roles[name].instructions,
+                use_mcp=(
+                    self.query_one(f"#{name}-mcp", Checkbox).value
+                    if backend != "agy-cli"
+                    else False
+                ),
+                mcp_tools=(
+                    [
+                        tool.strip()
+                        for tool in self.query_one(f"#{name}-mcp-tools", Input).value.split(",")
+                        if tool.strip()
+                    ]
+                    if backend == "claude-cli"
+                    else []
+                ),
                 skills=[
                     value.strip()
                     for value in self.query_one(f"#{name}-skills", Input).value.split(",")

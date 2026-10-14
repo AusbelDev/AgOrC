@@ -84,7 +84,6 @@ def codex_command(request: AgentRequest, schema_path: Path | None) -> list[str]:
         "exec",
         "--json",
         "--ephemeral",
-        "--ignore-user-config",
         "--color",
         "never",
         "--model",
@@ -98,6 +97,8 @@ def codex_command(request: AgentRequest, schema_path: Path | None) -> list[str]:
         "-c",
         'model_provider="openai"',
     ]
+    if not request.role.use_mcp:
+        argv += ["--ignore-user-config"]
     if request.role.reasoning != "default":
         argv += ["-c", f"model_reasoning_effort={json.dumps(request.role.reasoning)}"]
     if schema_path:
@@ -310,6 +311,9 @@ async def claude_login_status(provider: Provider, workspace: Path) -> str:
 def claude_command(request: AgentRequest) -> list[str]:
     worker = request.role_name == "worker"
     tools = "Read,Glob,Grep,Edit,Write,Bash" if worker else "Read,Glob,Grep"
+    allowed = "Read,Glob,Grep,Edit(./**)" if worker else "Read,Glob,Grep"
+    if request.role.use_mcp and request.role.mcp_tools:
+        allowed += "," + ",".join(request.role.mcp_tools)
     settings: dict[str, Any] = {"forceLoginMethod": "claudeai"}
     if request.provider.sandbox:
         settings["sandbox"] = {
@@ -332,13 +336,13 @@ def claude_command(request: AgentRequest) -> list[str]:
         "dontAsk",
         "--tools",
         tools,
-        "--disallowedTools",
-        "mcp__*",
         "--allowedTools",
-        "Read,Glob,Grep,Edit(./**)" if worker else "Read,Glob,Grep",
+        allowed,
         "--settings",
         json.dumps(settings),
     ]
+    if not request.role.use_mcp:
+        argv += ["--disallowedTools", "mcp__*"]
     if request.role.reasoning != "default":
         argv += ["--effort", request.role.reasoning]
     if request.schema:

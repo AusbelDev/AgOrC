@@ -101,3 +101,53 @@ def test_claude_roles_round_trip_with_custom_provider_model_and_effort(tmp_path)
     path = tmp_path / "claude.toml"
     save_config(config, path)
     assert load_config(path).to_dict() == config.to_dict()
+
+
+def test_mcp_settings_round_trip_and_old_profiles_default_to_disabled(tmp_path):
+    data = default_config().to_dict()
+    for role in data["roles"].values():
+        role.pop("use_mcp")
+        role.pop("mcp_tools")
+    config = Config.from_dict(data)
+    assert all(not role.use_mcp and not role.mcp_tools for role in config.roles.values())
+    config.roles["planner"].use_mcp = True
+    config.roles["worker"].provider = "claude"
+    config.roles["worker"].model = "sonnet"
+    config.roles["worker"].use_mcp = True
+    config.roles["worker"].mcp_tools = ["mcp__jira__get_issue", "mcp__jira__search"]
+    path = tmp_path / "mcp.toml"
+    save_config(config, path)
+    assert load_config(path).to_dict() == config.to_dict()
+
+
+@pytest.mark.parametrize(
+    "setting,value",
+    [
+        ("use_mcp", "true"),
+        ("use_mcp", 1),
+        ("mcp_tools", "mcp__jira__get_issue"),
+        ("mcp_tools", ["Bash"]),
+        ("mcp_tools", ["mcp__*"]),
+        ("mcp_tools", ["mcp__*__get_issue"]),
+        ("mcp_tools", ["mcp__jira__get_issue,Write"]),
+        ("mcp_tools", [""]),
+    ],
+)
+def test_invalid_mcp_settings_fail_clearly(setting, value):
+    config = default_config()
+    config.roles["planner"].provider = "claude"
+    setattr(config.roles["planner"], setting, value)
+    with pytest.raises(ConfigError, match=setting):
+        config.validate()
+
+
+def test_claude_mcp_permissions_can_be_saved_while_disabled():
+    config = default_config()
+    config.roles["planner"].provider = "claude"
+    config.roles["planner"].mcp_tools = [
+        "mcp__atlassian-jira-dc__get*", "mcp__atlassian-jira-dc__*"
+    ]
+    config.validate()
+    config.roles["planner"].provider = "codex"
+    with pytest.raises(ConfigError, match="only to Claude"):
+        config.validate()

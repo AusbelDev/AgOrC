@@ -29,6 +29,11 @@ reasoning = "high"
 instructions = ""
 skills = ["*"]
 required_skills = []
+# Enable existing CLI MCP connections for this role (e.g. to read Jira before planning).
+use_mcp = false
+# Claude only: extra tools approved without prompts. Use your actual server/tool names.
+# Examples: ["mcp__jira__get_issue", "mcp__jira__search"] or ["mcp__jira__*"] for a whole server.
+mcp_tools = []
 
 [roles.worker]
 provider = "antigravity"
@@ -38,6 +43,8 @@ instructions = ""
 skills = ["*"]
 # Add names of work skills that should apply every time, e.g. ["company-coding-rules"].
 required_skills = []
+use_mcp = false
+mcp_tools = []
 
 [roles.reviewer]
 provider = "codex"
@@ -46,6 +53,8 @@ reasoning = "high"
 instructions = ""
 skills = ["*"]
 required_skills = []
+use_mcp = false
+mcp_tools = []
 
 [skills]
 # Discover each role's harness global skills automatically.
