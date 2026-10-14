@@ -318,6 +318,50 @@ container user. Mount the target repository and persist the configured state dir
 history and worktrees. Start the container with `docker run -it` for the TUI. Run
 `orchestrator demo` to check the installation without provider credentials.
 
+## Updating Orchestrator in a container
+
+Keep your existing `orchestrator.local.toml` and state directory. You do not need to run `init`
+again when updating.
+
+1. Quit the TUI with `Ctrl+Q`.
+2. In the container, open your Orchestrator checkout and pull the latest changes from `main`:
+
+   ```sh
+   cd /path/to/orchestrator
+   git pull --ff-only origin main
+   ```
+
+   Replace the path with your actual checkout. If Git reports local changes or diverging history,
+   resolve that before continuing; this command will not discard your changes. If the checkout is
+   mounted from the host, you can pull in that same checkout on the host instead.
+
+3. Update using the same installation method you originally used.
+
+   **For uv:**
+
+   ```sh
+   uv sync --python 3.9
+   uv run orchestrator tui --repo /path/to/your/project
+   ```
+
+   **For the pip virtualenv from the container example above:**
+
+   ```sh
+   /opt/orchestrator-venv/bin/python -m pip install --upgrade .
+   /opt/orchestrator-venv/bin/orchestrator tui --repo /path/to/your/project
+   ```
+
+   If your virtualenv lives elsewhere, use its Python and `orchestrator` executables instead.
+
+4. To use Jira MCP, follow [Jira MCP access](#jira-mcp-access): enable **Use configured MCP servers**
+   for the desired Codex or Claude role, enter any additional Claude tool grants, and click
+   **Save settings**. Start a **new** task; existing runs retain their saved configuration.
+
+If Orchestrator was copied into the image during `docker build`, update the source checkout used
+for that build, rebuild the image, and recreate the container using your existing run or Compose
+configuration. Preserve the mounts for your profile, provider credentials, repository, and state
+directory so they are available to the replacement container.
+
 ## Configuration and profiles
 
 `orchestrator init` creates `orchestrator.local.toml`. See
