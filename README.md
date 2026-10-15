@@ -197,6 +197,8 @@ Try **Offline demo** first if you want to practice without provider credentials 
    In Docker, provider commands and logins must be available to the container user.
    For a Codex API-key login, scroll further to **AUTHENTICATION** and select **API key** for that
    named provider. See [Codex API-key authentication](#codex-api-key-authentication) for setup.
+   If Docker blocks Codex's inner sandbox, choose **Container isolation** under **EXECUTION**;
+   see [Codex container isolation](#codex-container-isolation) for its access scope and resume controls.
    To let a Codex or Claude planner fetch a ticket, enable **Use configured MCP servers** under
    **Planner**. For Claude, also allow the required Jira tools as described below.
 
@@ -380,6 +382,56 @@ container user. Mount the target repository and persist the configured state dir
 history and worktrees. Start the container with `docker run -it` for the TUI. Run
 `orchestrator demo` to check the installation without provider credentials.
 
+## Codex container isolation
+
+If Codex fails with `bwrap: No permissions to creating new namespace`, you can use Docker as its
+isolation boundary. This mode runs Codex with `--sandbox danger-full-access`, skipping the inner
+Linux sandbox that requires user namespaces. It follows
+[OpenAI's container guidance](https://learn.chatgpt.com/docs/agent-approvals-security#run-codex-in-dev-containers).
+
+Enable this only inside a container you intend to use as the isolation boundary. Codex gets the
+container user's access to files, credentials, network, and writable mounts. Planner/reviewer
+instructions and post-stage checks for source changes still apply, but those roles no longer have
+an OS-enforced read-only filesystem. The option does not create or configure a container.
+
+For **new tasks**:
+
+1. In the TUI's left panel, scroll below **AUTHENTICATION** to **EXECUTION**.
+2. Set **codex · Codex isolation** to **Container isolation**. Custom Codex providers have their
+   own selector. The setting applies to every role using that named provider.
+3. Click **Save settings**, then start the task as your normal container user, without `sudo`.
+
+Alternatively, add this line to the existing `[providers.codex]` section in your profile:
+
+```toml
+codex_isolation = "container"
+```
+
+`codex_isolation = "sandbox"` is the default for new and existing profiles. It keeps the read-only
+planner/reviewer and workspace-write worker sandboxes. Authentication, models, reasoning, MCP,
+and response schemas are configured independently of isolation.
+
+For an **existing unfinished run** that failed during review:
+
+1. Open **History** and select the run.
+2. Click **Resume in container** beneath the regular controls.
+
+This explicitly updates the saved isolation mode for the Codex providers used by that run and
+records an `isolation` event. It keeps the worktree, implementation, authentication, MCP settings,
+skill snapshots, and other saved settings. A pending review retries without repeating implementation;
+external worktree edits still invalidate verification results as usual. Future-task defaults are
+separate: use **EXECUTION** and **Save settings** to change those too.
+
+The same explicit override is available on the command line:
+
+```sh
+uv run orchestrator resume RUN_ID --container-isolation
+```
+
+The ordinary **Resume** button and command keep the saved isolation mode. Activity stage messages,
+the run report, and `orchestrator doctor` show the configured mode. Container isolation works with
+both Codex ChatGPT and cached API-key authentication, and keeps the selected MCP settings.
+
 ## Updating Orchestrator in a container
 
 Keep your existing `orchestrator.local.toml` and state directory. You do not need to run `init`
@@ -453,8 +505,9 @@ that prevent later tasks from running as your normal user.
 
 If the agent reports `bwrap` namespace-permission errors for every repository read, its inner
 Linux sandbox could not start. Docker or host restrictions can block the namespace/seccomp
-operations required by Codex. This needs a container or host configuration fix; changing Git
-ownership does not resolve a namespace failure. See
+operations required by Codex. Use [Codex container isolation](#codex-container-isolation) to rely
+on Docker instead of the inner sandbox, or adjust the container/host configuration to support
+the inner sandbox. Changing Git ownership does not resolve a namespace failure. See
 [Codex container sandbox requirements](https://learn.chatgpt.com/docs/agent-approvals-security#os-level-sandbox)
 and [Docker seccomp documentation](https://docs.docker.com/engine/security/seccomp/).
 
@@ -466,14 +519,16 @@ codex sandbox linux -- /bin/true
 
 Record the exact error and the container's Docker run command or Compose service. The appropriate
 fix depends on whether the restriction comes from seccomp, AppArmor, user-namespace settings, or
-the host kernel. Orchestrator explicitly requests Codex's read-only sandbox for planner/reviewer
-and workspace-write for worker, so a different sandbox setting in your CLI's user config does
-not override those choices.
+the host kernel. In the default `sandbox` mode, Orchestrator explicitly requests Codex's read-only
+sandbox for planner/reviewer and workspace-write for worker. The `container` mode explicitly selects
+`danger-full-access`. A different sandbox setting in your CLI's user config does not override the
+chosen Orchestrator isolation mode.
 
 An incomplete review remains failed and preserves the reviewer's explanation in the error and
 report. After fixing repository access, select that run in **History** and click **Resume** to
 retry its pending review. Existing implementation and verification results are retained unless
-the workspace changed.
+the workspace changed. To switch that existing run to Docker isolation instead, click **Resume in
+container**; changing the left-panel defaults alone does not change a saved run.
 
 If the reviewer also reports that Jira MCP is unavailable, remember that MCP is configured per
 role. A reviewer can use requirements already captured in the saved plan. If it must fetch Jira
@@ -666,8 +721,11 @@ The app creates changes for inspection. It does not commit those changes, merge,
 or write to Jira. The generated worktrees and artifacts are retained. Inspect/copy changes using Git
 or your editor; clean up a worktree yourself when you no longer need it.
 
-**Execution policy:** Codex selects its read-only sandbox for planner/reviewer and workspace-write
-sandbox for worker, with interactive escalation disabled. By default it runs without the user's
+**Execution policy:** By default Codex selects its read-only sandbox for planner/reviewer and
+workspace-write sandbox for worker, with interactive escalation disabled. An explicit
+`codex_isolation = "container"` selects full container-user access for all Codex roles, relying on
+Docker isolation. Planner/reviewer source-change checks still apply, but they are not OS read-only
+restrictions in container mode. By default Codex runs without the user's
 global Codex configuration. Enabling a role's MCP setting loads that configuration while retaining
 explicit model/auth/sandbox flags; repository instructions still apply. Antigravity uses its native
 `--mode plan` for planner/reviewer and `--mode accept-edits`

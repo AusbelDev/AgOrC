@@ -66,6 +66,11 @@ def parser() -> argparse.ArgumentParser:
     resume = commands.add_parser("resume", help="Resume a paused, interrupted, or failed run")
     resume.add_argument("run_id")
     resume.add_argument("--note", help="Additional instructions applied before resuming")
+    resume.add_argument(
+        "--container-isolation",
+        action="store_true",
+        help="Resume Codex roles using container isolation (full container access)",
+    )
     return result
 
 
@@ -101,6 +106,14 @@ async def doctor(config, *, live: bool = False, test_skills: bool = False) -> in
                 )
             print(f"  {role_name} MCP: {mcp} (connection not tested)")
         if provider.backend == "codex-cli":
+            print(
+                "  Codex isolation: "
+                + (
+                    "container (inner sandbox disabled; container permissions apply)"
+                    if provider.codex_isolation == "container"
+                    else "Codex sandbox (role-specific permissions)"
+                )
+            )
             from .adapters import BackendError, codex_login_status
 
             try:
@@ -237,7 +250,9 @@ async def run_command(args: argparse.Namespace, store: Store, config) -> int:
             config.workflow.checks = [shlex.split(command) for command in args.check]
         task = sys.stdin.read() if args.task == "-" else args.task
         run = await engine.create(task, args.repo, config)
-    result = await engine.execute(run.id)
+    result = await engine.execute(
+        run.id, container_isolation=getattr(args, "container_isolation", False)
+    )
     print(f"\nRun: {result.id}\nStatus: {result.status}\nWorkspace: {result.worktree}")
     print(f"Report: {store.directory(result.id) / 'report.md'}")
     return 0 if result.status == "completed" else 2

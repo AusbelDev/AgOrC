@@ -8,6 +8,9 @@ backend = "codex-cli"
 auth = "login"
 executable = "codex"
 models = ["gpt-6.1-sol"]
+# "container" relies on Docker isolation and grants Codex full container-user access.
+# "sandbox" keeps read-only planner/reviewer and workspace-write worker sandboxes.
+codex_isolation = "sandbox"
 
 [providers.antigravity]
 backend = "agy-cli"

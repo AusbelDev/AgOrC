@@ -46,3 +46,18 @@ async def project(tmp_path: Path) -> Path:
 @pytest.fixture
 async def demo_run(store):
     return await create_demo(Engine(store), default_config())
+
+
+@pytest.fixture
+async def paused_demo_run(store, demo_run):
+    engine = Engine(store)
+    original_checks = engine.checks
+
+    async def pause_after_checks(run, config):
+        await original_checks(run, config)
+        engine.pause()
+
+    engine.checks = pause_after_checks
+    paused = await engine.execute(demo_run.id)
+    assert paused.status == "paused" and paused.stage == "reviewer"
+    return paused

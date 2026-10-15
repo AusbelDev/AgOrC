@@ -130,6 +130,25 @@ def test_codex_mcp_inheritance_keeps_explicit_execution_settings(tmp_path, role,
     assert command[command.index("--output-schema") + 1] == str(tmp_path / "schema.json")
 
 
+@pytest.mark.parametrize("role", ["planner", "worker", "reviewer"])
+@pytest.mark.parametrize("auth", ["login", "api"])
+@pytest.mark.parametrize("use_mcp", [False, True])
+def test_codex_container_isolation_keeps_auth_mcp_model_and_schema(tmp_path, role, auth, use_mcp):
+    req = request(tmp_path, role=role, provider="codex")
+    req.provider.executable = sys.executable
+    req.provider.auth = auth
+    req.provider.codex_isolation = "container"
+    req.role.use_mcp = use_mcp
+    command = codex_command(req, tmp_path / "schema.json")
+    assert command[command.index("--sandbox") + 1] == "danger-full-access"
+    assert 'approval_policy="never"' in command
+    assert f'forced_login_method="{"api" if auth == "api" else "chatgpt"}"' in command
+    assert command[command.index("--model") + 1] == req.role.model
+    assert command[command.index("--output-schema") + 1] == str(tmp_path / "schema.json")
+    assert ("--ignore-user-config" in command) is not use_mcp
+    assert "--dangerously-bypass-approvals-and-sandbox" not in command
+
+
 def test_antigravity_native_flags_and_role_modes(tmp_path):
     worker = request(tmp_path)
     worker.provider.executable = sys.executable

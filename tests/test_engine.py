@@ -206,10 +206,11 @@ async def test_cancellation_persists_stage_and_resumes(store, project):
     assert backend.calls.count("planner") == 1
 
 
-async def test_reviewer_changes_fail_instead_of_being_accepted(store, project):
+@pytest.mark.parametrize("container_isolation", [False, True])
+async def test_reviewer_changes_fail_instead_of_being_accepted(store, project, container_isolation):
     engine = engine_for(store, ScriptedBackend(mutate_reviewer=True))
     run = await engine.create("Fix value", project, default_config())
-    finished = await engine.execute(run.id)
+    finished = await engine.execute(run.id, container_isolation=container_isolation)
     assert finished.status == "failed"
     assert "reviewer modified" in finished.error
 
@@ -234,6 +235,69 @@ async def test_incomplete_review_preserves_cause_and_can_resume_without_reimplem
     resumed = await engine.execute(run.id)
     assert resumed.status == "completed"
     assert backend.calls == ["planner", "worker", "reviewer", "reviewer"]
+
+
+async def test_explicit_container_resume_keeps_saved_settings_and_retries_review(
+    store, project, tmp_path
+):
+    seen = []
+
+    class NamespaceBackend(ScriptedBackend):
+        async def run(self, request, emit):
+            seen.append((request.role_name, request.provider.codex_isolation))
+            if request.role_name == "reviewer" and request.provider.codex_isolation == "sandbox":
+                return AgentResult(json.dumps({
+                    "accepted": False,
+                    "summary": "bwrap namespace permission denied",
+                    "findings": [],
+                }))
+            return await super().run(request, emit)
+
+    config = default_config()
+    config.providers["codex"].auth = "api"
+    config.roles["planner"].use_mcp = True
+    config.roles["reviewer"].use_mcp = True
+    library = tmp_path / "skills" / "rules"
+    library.mkdir(parents=True)
+    (library / "SKILL.md").write_text(
+        "---\nname: rules\ndescription: Testing rules.\n---\nKeep the public API.\n"
+    )
+    config.skills.paths = [str(library)]
+    config.roles["reviewer"].required_skills = ["rules"]
+    config.workflow.checks = [[sys.executable, "-c", "from module import value; assert value == 2"]]
+    engine = engine_for(store, NamespaceBackend())
+    run = await engine.create("Fix value", project, config)
+    failed = await engine.execute(run.id)
+    assert failed.status == "failed" and failed.stage == "reviewer"
+    config.providers["codex"].codex_isolation = "container"
+    # Editing defaults alone must not silently change a saved run's permissions.
+    still_failed = await engine.execute(run.id)
+    assert still_failed.status == "failed"
+    resumed = await engine.execute(run.id, container_isolation=True)
+    assert resumed.status == "completed"
+    assert resumed.checks == failed.checks
+    assert resumed.skills == failed.skills
+    assert resumed.config == config.to_dict()
+    assert [role for role, _ in seen].count("worker") == 1
+    assert seen[-1] == ("reviewer", "container")
+    events = [e for e in store.events(run.id) if e["kind"] == "isolation"]
+    assert len(events) == 1
+    assert events[0]["data"]["providers"] == ["codex"]
+    assert "Container isolation" in report(resumed)
+
+
+async def test_container_resume_rejects_runs_without_codex_roles(store, project):
+    config = default_config()
+    for role in config.roles.values():
+        role.provider = "antigravity"
+        role.model = "fixture-model"
+    engine = engine_for(store, ScriptedBackend())
+    run = await engine.create("Fix value", project, config)
+    before = run.config
+    with pytest.raises(ValueError, match="no Codex roles"):
+        await engine.execute(run.id, container_isolation=True)
+    assert store.get(run.id).config == before
+    assert engine.active is None
 
 
 async def test_instructions_added_during_worker_require_another_pass(store, project):
@@ -362,8 +426,9 @@ async def test_claude_cli_end_to_end_uses_structured_roles_and_real_checks(
     assert "+value = 2" in (store.directory(run.id) / "changes.diff").read_text()
 
 
+@pytest.mark.parametrize("isolation", ["sandbox", "container"])
 async def test_codex_api_auth_and_mcp_complete_workflow_without_recording_key(
-    store, project, tmp_path
+    store, project, tmp_path, isolation
 ):
     cli = tmp_path / "codex-fixture"
     cli.write_text(
@@ -373,6 +438,10 @@ async def test_codex_api_auth_and_mcp_complete_workflow_without_recording_key(
         "    sys.exit(0)\n"
         "assert 'forced_login_method=\"api\"' in sys.argv\n"
         "assert 'forced_login_method=\"chatgpt\"' not in sys.argv\n"
+        f"isolation = {isolation!r}\n"
+        "sandbox = sys.argv[sys.argv.index('--sandbox') + 1]\n"
+        "assert sandbox == ('danger-full-access' if isolation == 'container' else "
+        "'read-only' if '--output-schema' in sys.argv else 'workspace-write')\n"
         "assert 'Read Jira BACKEND-123' in sys.stdin.read()\n"
         "response = 'Fixed'\n"
         "if '--output-schema' in sys.argv:\n"
@@ -390,6 +459,7 @@ async def test_codex_api_auth_and_mcp_complete_workflow_without_recording_key(
     cli.chmod(0o755)
     config = default_config()
     config.providers["codex"].auth = "api"
+    config.providers["codex"].codex_isolation = isolation
     config.providers["codex"].executable = str(cli)
     for role in config.roles.values():
         role.provider = "codex"

@@ -171,3 +171,32 @@ def test_api_auth_is_only_supported_for_codex(backend):
     provider.auth = "api"
     with pytest.raises(ConfigError, match="supports auth = 'login'"):
         config.validate()
+
+
+def test_codex_container_isolation_round_trips_and_old_profiles_keep_sandbox(tmp_path):
+    data = default_config().to_dict()
+    for provider in data["providers"].values():
+        provider.pop("codex_isolation")
+    config = Config.from_dict(data)
+    assert config.providers["codex"].codex_isolation == "sandbox"
+    config.providers["codex"].codex_isolation = "container"
+    config.providers["codex"].auth = "api"
+    profile = tmp_path / "container.toml"
+    save_config(config, profile)
+    assert load_config(profile).to_dict() == config.to_dict()
+
+
+@pytest.mark.parametrize("value", [False, "disabled", "danger-full-access", None])
+def test_invalid_codex_isolation_is_rejected(value):
+    config = default_config()
+    config.providers["codex"].codex_isolation = value
+    with pytest.raises(ConfigError, match="codex_isolation"):
+        config.validate()
+
+
+@pytest.mark.parametrize("provider_name", ["claude", "antigravity"])
+def test_container_isolation_is_only_supported_for_codex(provider_name):
+    config = default_config()
+    config.providers[provider_name].codex_isolation = "container"
+    with pytest.raises(ConfigError, match="only to Codex"):
+        config.validate()

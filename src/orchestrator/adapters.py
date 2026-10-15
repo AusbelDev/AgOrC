@@ -112,6 +112,11 @@ async def codex_login_status(provider: Provider, workspace: Path) -> str:
 
 def codex_command(request: AgentRequest, schema_path: Path | None) -> list[str]:
     auth_method = "api" if request.provider.auth == "api" else "chatgpt"
+    sandbox_mode = (
+        "danger-full-access"
+        if request.provider.codex_isolation == "container"
+        else "workspace-write" if request.role_name == "worker" else "read-only"
+    )
     argv = [
         executable(request.provider),
         "exec",
@@ -122,7 +127,7 @@ def codex_command(request: AgentRequest, schema_path: Path | None) -> list[str]:
         "--model",
         request.role.model,
         "--sandbox",
-        "workspace-write" if request.role_name == "worker" else "read-only",
+        sandbox_mode,
         "-c",
         'approval_policy="never"',
         "-c",

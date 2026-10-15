@@ -258,8 +258,14 @@ class Engine:
             )
             schema = REVIEW_SCHEMA
         before = await git.fingerprint(workspace, run.base, ignored=self.skill_paths(run))
+        isolation_note = (
+            " · container isolation"
+            if provider.backend == "codex-cli" and provider.codex_isolation == "container"
+            else ""
+        )
         await self.emit(
-            run, "stage", f"{name.title()} · {role.provider} / {role.model} / {role.reasoning}"
+            run, "stage",
+            f"{name.title()} · {role.provider} / {role.model} / {role.reasoning}{isolation_note}",
         )
 
         async def sink(kind: str, message: str, data: dict[str, Any]) -> None:
@@ -358,7 +364,7 @@ class Engine:
             self.store.save(run)
         self.store.artifact(run.id, f"checks-{run.attempt}.json", json.dumps(run.checks, indent=2))
 
-    async def execute(self, run_id: str) -> Run:
+    async def execute(self, run_id: str, *, container_isolation: bool = False) -> Run:
         if self.active:
             raise ValueError("This engine is already running a task.")
         with self.store.lock(run_id):
@@ -366,6 +372,19 @@ class Engine:
             if run.status in ("completed", "needs_attention"):
                 raise ValueError("This run has finished. Start a new task for further changes.")
             config = Config.from_dict(run.config)
+            isolation_overrides = []
+            if container_isolation:
+                codex_providers = [
+                    name
+                    for name in dict.fromkeys(role.provider for role in config.roles.values())
+                    if config.providers[name].backend == "codex-cli"
+                ]
+                if not codex_providers:
+                    raise ValueError("This run has no Codex roles to use container isolation.")
+                for name in codex_providers:
+                    if config.providers[name].codex_isolation != "container":
+                        config.providers[name].codex_isolation = "container"
+                        isolation_overrides.append(name)
             self.active = run
             self.pause_requested = False
             started = time.monotonic()
@@ -376,6 +395,14 @@ class Engine:
                         for provider in run.config["providers"].values()
                     )
                     run.config = config.to_dict()
+                    if isolation_overrides:
+                        await self.emit(
+                            run,
+                            "isolation",
+                            "Container isolation enabled for " + ", ".join(isolation_overrides)
+                            + ". Codex's inner sandbox is disabled; container permissions apply.",
+                            {"providers": isolation_overrides, "codex_isolation": "container"},
+                        )
                     if migrated_backend:
                         await self.emit(
                             run,
@@ -504,6 +531,21 @@ def report(run: Run) -> str:
         provider = run.config["providers"][name]
         auth = "API key" if provider.get("auth", "login") == "api" else "CLI account login"
         lines.append(f"- {name}: {auth}")
+    codex_providers = [
+        name for name in dict.fromkeys(role.provider for role in roles.values())
+        if run.config["providers"][name]["backend"] == "codex-cli"
+    ]
+    if codex_providers:
+        lines += ["", "## Execution isolation", ""]
+        for name in codex_providers:
+            container = (
+                run.config["providers"][name].get("codex_isolation", "sandbox") == "container"
+            )
+            mode = (
+                "Container isolation (Codex inner sandbox disabled; container permissions apply)"
+                if container else "Codex sandbox (role-specific permissions)"
+            )
+            lines.append(f"- {name}: {mode}")
     if any(role.use_mcp for role in roles.values()):
         lines += ["", "## MCP configuration", ""]
         for name, role in roles.items():

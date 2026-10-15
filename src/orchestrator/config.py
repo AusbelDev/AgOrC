@@ -33,6 +33,7 @@ class Provider:
     executable: str = ""
     models: list[str] = field(default_factory=list)
     sandbox: bool = False
+    codex_isolation: str = "sandbox"
 
 
 @dataclass
@@ -94,6 +95,12 @@ class Config:
                 raise ConfigError(f"Provider {name}: executable must be a path or command name.")
             if not isinstance(provider.sandbox, bool):
                 raise ConfigError(f"Provider {name}: sandbox must be a boolean.")
+            if provider.codex_isolation not in ("sandbox", "container"):
+                raise ConfigError(
+                    f"Provider {name}: codex_isolation must be 'sandbox' or 'container'."
+                )
+            if provider.codex_isolation == "container" and provider.backend != "codex-cli":
+                raise ConfigError(f"Provider {name}: codex_isolation applies only to Codex.")
             if not isinstance(provider.models, list) or not all(
                 isinstance(model, str) and model.strip() for model in provider.models
             ):

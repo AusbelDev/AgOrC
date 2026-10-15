@@ -69,6 +69,7 @@ class OrchestratorApp(App):
     #controls { height: auto; padding: 0 0 1 0; }
     #controls Button { min-width: 8; width: 1fr; margin-right: 1; }
     #controls Button:last-child { margin-right: 0; }
+    #resume-container { width: 1fr; margin-bottom: 1; }
     #launch { height: auto; margin-top: 1; margin-bottom: 1; }
     #launch Button { min-width: 10; width: 1fr; }
     #start { margin-right: 1; }
@@ -190,6 +191,20 @@ class OrchestratorApp(App):
                         "Set up credentials with codex login; keys stay in its credential store.",
                         markup=False,
                     )
+                    yield Label("EXECUTION", classes="section")
+                    for name, field_id in self.provider_auth_fields.items():
+                        yield Label(f"{name} · Codex isolation")
+                        yield Select(
+                            [("Codex sandbox", "sandbox"), ("Container isolation", "container")],
+                            value=self.config.providers[name].codex_isolation,
+                            allow_blank=False,
+                            id=f"{field_id}-isolation",
+                        )
+                    yield Static(
+                        "Container isolation gives Codex the container user's file and mount "
+                        "access. Docker supplies the isolation; Codex's inner sandbox is disabled.",
+                        markup=False,
+                    )
                 yield Label("VERIFICATION", classes="section")
                 yield Label("Check commands (JSON argv arrays)")
                 yield TextArea(json.dumps(self.config.workflow.checks, indent=2), id="checks")
@@ -212,6 +227,13 @@ class OrchestratorApp(App):
                     yield Button("Pause", id="pause", disabled=True)
                     yield Button("Stop", id="stop", disabled=True)
                     yield Button("Resume", id="resume", disabled=True)
+                yield Button(
+                    "Resume in container",
+                    id="resume-container",
+                    disabled=True,
+                    tooltip="Resume this run's Codex roles with full container access. "
+                    "Other saved settings stay the same.",
+                )
                 with TabbedContent(id="tabs"):
                     with TabPane("Activity", id="activity-tab"):
                         yield RichLog(id="activity", wrap=True, markup=False, max_lines=2000)
@@ -335,6 +357,9 @@ class OrchestratorApp(App):
         copied = Config.from_dict(self.config.to_dict())
         for name, field_id in self.provider_auth_fields.items():
             copied.providers[name].auth = str(self.query_one(f"#{field_id}", Select).value)
+            copied.providers[name].codex_isolation = str(
+                self.query_one(f"#{field_id}-isolation", Select).value
+            )
         for name in ROLES:
             selected_provider = str(self.query_one(f"#{name}-provider", Select).value)
             backend = copied.providers[selected_provider].backend
@@ -481,6 +506,13 @@ class OrchestratorApp(App):
             "needs_attention",
         )
         self.query_one("#resume", Button).disabled = running or not resumable
+        has_codex = bool(self.selected_run) and any(
+            self.selected_run.config["providers"][role["provider"]]["backend"] == "codex-cli"
+            for role in self.selected_run.config["roles"].values()
+        )
+        self.query_one("#resume-container", Button).disabled = (
+            running or not resumable or not has_codex
+        )
         self.query_one("#send-note", Button).disabled = not self.selected_run or (
             self.selected_run.status in ("completed", "needs_attention")
         )
@@ -490,7 +522,9 @@ class OrchestratorApp(App):
             self.show_run(run)
         self.query_one("#activity", RichLog).write(self.format_event(event))
 
-    async def launch(self, *, demo: bool = False, resume: bool = False) -> None:
+    async def launch(
+        self, *, demo: bool = False, resume: bool = False, container_isolation: bool = False
+    ) -> None:
         try:
             if resume:
                 if not self.selected_run:
@@ -516,7 +550,7 @@ class OrchestratorApp(App):
                 self.store.save(run)
                 self.show_run(run)
                 return
-            finished = await self.engine.execute(run.id)
+            finished = await self.engine.execute(run.id, container_isolation=container_isolation)
             self.show_run(finished)
             diff_path = self.store.directory(run.id) / "changes.diff"
             if diff_path.exists():
@@ -544,6 +578,8 @@ class OrchestratorApp(App):
             self.start_launch(demo=True)
         elif name == "resume":
             self.action_resume()
+        elif name == "resume-container":
+            self.action_resume_container()
         elif name == "pause":
             self.action_pause()
         elif name == "stop":
@@ -608,6 +644,10 @@ class OrchestratorApp(App):
     def action_resume(self) -> None:
         if self.selected_run and self.selected_run.status not in ("completed", "needs_attention"):
             self.start_launch(resume=True)
+
+    def action_resume_container(self) -> None:
+        if self.selected_run and self.selected_run.status not in ("completed", "needs_attention"):
+            self.start_launch(resume=True, container_isolation=True)
 
     async def action_quit(self) -> None:
         if self.running_task:

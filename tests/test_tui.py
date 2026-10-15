@@ -219,3 +219,49 @@ async def test_tui_codex_api_auth_is_shared_by_provider_and_persists(store, tmp_
     async with reopened.run_test(size=(80, 24)):
         field = reopened.provider_auth_fields["codex"]
         assert reopened.query_one(f"#{field}", Select).value == "api"
+
+
+async def test_tui_container_isolation_defaults_save_and_reopen(store, tmp_path):
+    profile = tmp_path / "container.toml"
+    app = OrchestratorApp(default_config(), profile, store, tmp_path)
+    async with app.run_test(size=(80, 24)) as pilot:
+        field = app.provider_auth_fields["codex"] + "-isolation"
+        assert app.query_one(f"#{field}", Select).value == "sandbox"
+        app.query_one(f"#{field}", Select).value = "container"
+        app.query_one("#save", Button).scroll_visible(animate=False, immediate=True)
+        await pilot.pause()
+        await pilot.click("#save")
+        await pilot.pause()
+        saved = load_config(profile)
+        assert saved.providers["codex"].codex_isolation == "container"
+        assert saved.providers["codex"].auth == "login"
+        assert saved.providers["claude"].codex_isolation == "sandbox"
+    reopened = OrchestratorApp(saved, profile, store, tmp_path)
+    async with reopened.run_test(size=(80, 24)):
+        field = reopened.provider_auth_fields["codex"] + "-isolation"
+        assert reopened.query_one(f"#{field}", Select).value == "container"
+
+
+async def test_tui_resume_in_container_keeps_existing_work_and_saved_settings(
+    store, paused_demo_run, tmp_path
+):
+    app = OrchestratorApp(default_config(), tmp_path / "profile.toml", store, tmp_path)
+    async with app.run_test(size=(150, 55)) as pilot:
+        assert app.query_one("#resume-container", Button).disabled
+        app.show_run(paused_demo_run)
+        assert not app.query_one("#resume-container", Button).disabled
+        # Unsaved authentication changes must not be applied by container resume.
+        field = app.provider_auth_fields["codex"]
+        app.query_one(f"#{field}", Select).value = "api"
+        await pilot.pause()
+        await pilot.click("#resume-container")
+        if app.running_task:
+            await asyncio.wait_for(app.running_task, timeout=5)
+        await pilot.pause()
+        assert app.selected_run.status == "completed"
+        saved = store.get(paused_demo_run.id)
+        assert saved.config["providers"]["codex"]["codex_isolation"] == "container"
+        assert saved.config["providers"]["codex"]["auth"] == "login"
+        assert saved.checks == paused_demo_run.checks
+        assert saved.skills == paused_demo_run.skills
+        assert app.query_one("#resume-container", Button).disabled

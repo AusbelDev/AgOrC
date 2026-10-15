@@ -192,3 +192,23 @@ async def test_doctor_accepts_api_auth_and_does_not_print_key(tmp_path, capsys):
     output = capsys.readouterr().out
     assert "Current CLI login: API key" in output
     assert "sk-fixture-secret" not in output
+
+
+async def test_cli_container_resume_updates_saved_isolation_and_finishes_pending_review(
+    store, paused_demo_run, tmp_path
+):
+    result = await run_process(
+        [
+            sys.executable, "-m", "orchestrator.cli",
+            "--state-dir", str(store.root),
+            "resume", paused_demo_run.id, "--container-isolation",
+        ],
+        tmp_path,
+        timeout=15,
+    )
+    assert result.code == 0, result.stderr
+    assert "Container isolation enabled" in result.stdout
+    assert "Status: completed" in result.stdout
+    saved = store.get(paused_demo_run.id)
+    assert saved.config["providers"]["codex"]["codex_isolation"] == "container"
+    assert saved.checks == paused_demo_run.checks
